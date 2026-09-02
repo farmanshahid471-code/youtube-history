@@ -218,6 +218,31 @@ def _chrome_exe():
     return "chrome"
 
 
+def _ensure_browser() -> str:
+    """
+    Verify Playwright's bundled Chromium is installed. Returns the browser path or
+    raises a RuntimeError with a clear message if it is missing. This lets the bot
+    fail fast with instructions instead of hanging silently when the window doesn't open.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            try:
+                return p.chromium.executable_path
+            except Exception as e:
+                raise RuntimeError(
+                    "Playwright Chromium is not installed. Run the launcher again (it installs "
+                    "it) or run manually:  python -m playwright install chromium\nDetails: %s" % str(e)[:120]
+                )
+    except RuntimeError as e:
+        raise
+    except Exception as e:
+        raise RuntimeError(
+            "Playwright is not available. Install it with:  pip install -r requirements.txt\n"
+            "then:  python -m playwright install chromium\nDetails: %s" % str(e)[:120]
+        )
+
+
 def _dismiss_banners(page):
     """Dismisses consent, cookie, or info overlays."""
     selectors = [
@@ -889,6 +914,15 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
     cdp_url = cfg.get("cdp_url", "http://localhost:9222")
 
     try:
+        # Fail fast (with a clear message) if Playwright's browser isn't installed,
+        # instead of hanging silently with no window.
+        try:
+            _ensure_browser()
+        except RuntimeError as e:
+            print(str(e))
+            emit("error", message=str(e))
+            return
+
         with sync_playwright() as p:
             if connect_cdp:
                 # ATTACH to a Chrome you are already running (the SAME profile/window you
