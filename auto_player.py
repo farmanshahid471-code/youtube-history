@@ -864,21 +864,30 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                     print("Could not detect your Chrome profile. Pass: --profile-dir \"/path/to/Chrome/User Data\"")
                     emit("error", message="Chrome profile not detected")
                     return
-                print("Using real Chrome profile:", pdir, "(close open Chrome first)")
-                launched = p.chromium.launch(
+                print("Using real Chrome profile:", pdir)
+                emit("status", status="Opening your Chrome profile... Make sure Chrome is fully closed.")
+                # Use a PERSISTENT context so Playwright owns and reuses the real profile.
+                # (p.chromium.launch with --user-data-dir hangs forever if Chrome is already
+                # running with that profile, which is why the bot previously appeared stuck.)
+                ctx = p.chromium.launch_persistent_context(
+                    pdir,
                     executable_path=_chrome_exe(),
                     headless=False,
-                    args=["--user-data-dir=%s" % pdir, "--profile-directory=Default"],
+                    args=["--profile-directory=Default"],
+                    viewport=None,
+                    locale="en-US",
+                    timeout=90000,  # don't hang forever if the profile is locked
                 )
-                ctx = launched.new_context(viewport=None, locale="en-US")
             else:
                 dedicated.mkdir(exist_ok=True)
+                emit("status", status="Opening a fresh browser window (dedicated profile)...")
                 ctx = p.chromium.launch_persistent_context(
                     str(dedicated),
                     headless=headless,
                     args=["--start-maximized"],
                     viewport=None,
                     locale="en-US",
+                    timeout=90000,
                 )
 
             page = ctx.pages[0] if ctx.pages else ctx.new_page()

@@ -949,12 +949,31 @@ class UIHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Endpoint not found")
 
     def log_message(self, format, *args):
+        # Silence the harmless "ConnectionAbortedError / 10053" tracebacks that appear
+        # when the user refreshes or closes the dashboard tab mid-request.  These are
+        # normal HTTP client disconnects, not bot errors.
         return
+
+
+class QuietHTTPServer(HTTPServer):
+    """HTTPServer that doesn't print client-disconnect noise to the console."""
+    def handle_error(self, request, client_address):
+        import sys
+        import traceback
+        exc = sys.exc_info()[1]
+        # Windows client aborts (WinError 10053) and similar brief disconnects are
+        # normal when the browser tab is refreshed/closed mid-request.  Don't spam.
+        name = type(exc).__name__ if exc else ""
+        msg = str(exc) if exc else ""
+        if "ConnectionAborted" in name or "10053" in msg or "ConnectionReset" in name or "10054" in msg:
+            return
+        # Otherwise show the real error (bugs, not disconnects).
+        traceback.print_exc()
 
 
 def run_ui_server(port: int = 5000):
     host = "0.0.0.0"
-    server = HTTPServer((host, port), UIHandler)
+    server = QuietHTTPServer((host, port), UIHandler)
     print("=" * 60)
     print("  YouTube History Bot — Control Panel UI")
     print(f"  Access local dashboard : http://localhost:{port}")
