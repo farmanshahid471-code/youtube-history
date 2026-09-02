@@ -2,5 +2,6 @@
 __pycache__/
 *.pyc
 browser_profile/
+cloned_profile/
 output/
 stop.txt

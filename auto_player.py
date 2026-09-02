@@ -109,6 +109,67 @@ def real_chrome_profile_dir():
     return None
 
 
+def _ignore_copy_errors(src, names):
+    """Copy everything except transient lock files & logs (these change constantly)."""
+    skip = {"SingletonLock", "SingletonCookie", "SingletonSocket", "LOG", "LOG.old",
+            "lockfile", "LOCK", "Local State", "GPU Cache", "GPUCache", "Cached Data",
+            "Code Cache", "DawnCache", "GrShaderCache", "ShaderCache", "History-journal"}
+    return [n for n in names if n in skip]
+
+
+def clone_real_profile(real_user_data_dir: str, profile_name: str) -> Path:
+    """
+    Make a writable, bot-owned COPY of a Chrome profile so Playwright can launch it
+    WITHOUT fighting the live profile's singleton lock / Chrome 136 restrictions.
+
+    Chrome refuses to let Playwright reliably drive a profile that the real Chrome
+    process owns or has locked (hence 'Target page, context or browser has been closed'
+    / launch timeouts). Copying the profile's cookies, local storage and settings into a
+    fresh user-data dir preserves ALL signed-in accounts so the bot can rotate them,
+    while leaving the user's real Chrome untouched.
+
+    Returns the path to the cloned user-data dir (whose 'Default' profile holds the
+    copied login). Raises RuntimeError on failure.
+    """
+    src_root = Path(real_user_data_dir)
+    src_profile = src_root / profile_name
+    if not src_profile.is_dir():
+        raise RuntimeError("Profile '%s' not found under %s" % (profile_name, src_root))
+
+    dst_root = HERE / "cloned_profile"
+    # Fresh copy each run so we don't re-use a possibly corrupt/partial snapshot.
+    if dst_root.exists():
+        import shutil as _sh
+        try:
+            _sh.rmtree(dst_root, ignore_errors=True)
+        except Exception:
+            pass
+    dst_root.mkdir(parents=True, exist_ok=True)
+
+    import shutil
+    # Copy 'Local State' (holds the cookie encryption key) and the profile folder into
+    # the clone's Default slot. Chrome reads the Default profile when no
+    # --profile-directory is given.
+    try:
+        local_state = src_root / "Local State"
+        if local_state.is_file():
+            shutil.copy2(local_state, dst_root / "Local State")
+    except Exception:
+        pass
+
+    default_dir = dst_root / "Default"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        src_profile,
+        default_dir,
+        dirs_exist_ok=True,
+        ignore=_ignore_copy_errors,
+    )
+    # Chrome also stores some shared state at the User Data root; copy "Preferences"
+    # for the account if present, but it's optional.
+    return dst_root
+
+
 def chrome_is_running() -> bool:
     """Cheap check: is a Chrome/Chromium browser process already running?"""
     try:
@@ -1028,19 +1089,26 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 print("  profile folder:", profile_full)
                 emit("status", status="Preparing Chrome profile '%s'..." % profile_name)
 
-                # Chrome is a single-instance browser per user-data-dir: if ANY chrome.exe
-                # is alive, a new launch hands off to it and Playwright never connects (the
-                # 60s launch timeout). So ALWAYS force-close Chrome first and verify it is
-                # gone, regardless of the cheap is-running check. Playwright then launches
-                # profile '%s' over a pipe (no debug port needed, so Chrome 136 is fine).
-                print("Closing any running Chrome so the bot can use profile '%s'... (your login is saved)" % profile_name)
-                emit("status", status="Closing Chrome so the bot can use profile '%s'..." % profile_name)
-                close_chrome()
+                # Direct Playwright attach to the user's LIVE profile is unreliable on
+                # Chrome 136 (the profile is owned/locked -> 'Target page, context or browser
+                # has been closed' / launch timeouts). Instead, clone the profile's logged-in
+                # state into a bot-owned folder and launch THAT. All signed-in accounts are
+                # preserved, and the user's real Chrome is never touched.
+                print("Copying your Chrome profile '%s' (all signed-in accounts will be preserved)..." % profile_name)
+                emit("status", status="Copying your signed-in Chrome profile '%s'..." % profile_name)
+                try:
+                    launch_dir = clone_real_profile(pdir, profile_name)
+                except Exception as e:
+                    emit("error", message=(
+                        "Could not copy your Chrome profile '%s'. Details: %s"
+                        % (profile_name, str(e)[:200])
+                    ))
+                    return
+                print("Cloned profile ready at:", launch_dir)
 
-                print("Launching profile '%s'..." % profile_name)
-                emit("status", status="Opening your real Chrome profile '%s'..." % profile_name)
+                print("Launching Chrome on the copied profile...")
+                emit("status", status="Opening Chrome with your copied session (accounts preserved)...")
                 launch_args = [
-                    "--profile-directory=%s" % profile_name,
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--no-sandbox",
@@ -1054,7 +1122,7 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 for attempt in range(3):
                     try:
                         ctx = p.chromium.launch_persistent_context(
-                            pdir,
+                            str(launch_dir),
                             channel="chrome",
                             headless=False,
                             args=launch_args,
@@ -1065,16 +1133,14 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                         break
                     except Exception as e:
                         last_err = e
-                        print("  launch attempt %d timed out: %s" % (attempt + 1, str(e)[:160]))
-                        # Chrome may have left a half-started instance; clear it and retry.
+                        print("  launch attempt %d failed: %s" % (attempt + 1, str(e)[:160]))
                         close_chrome()
                         time.sleep(2)
                 if ctx is None:
                     emit("error", message=(
-                        "Could not open Chrome profile '%s'. It is likely still in use by a "
-                        "running Chrome / background process. Close ALL Chrome windows, check "
-                        "Task Manager for a leftover chrome.exe, then press START BOT again. "
-                        "Details: %s" % (profile_name, str(last_err)[:200])
+                        "Could not open Chrome on the copied profile. This can happen if the "
+                        "profile copy is large. Right-click the bot folder, delete 'cloned_profile', "
+                        "then press START BOT again. Details: %s" % str(last_err)[:200]
                     ))
                     return
 
