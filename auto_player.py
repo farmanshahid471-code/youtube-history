@@ -121,44 +121,78 @@ def chrome_is_running() -> bool:
         return False
 
 
-def close_chrome():
-    """Force-close any running Chrome/Chromium so Playwright can launch the profile.
+def _chrome_lock_roots():
+    """Candidate profile root directories that may hold Chrome Singleton lock files."""
+    home = Path.home()
+    return [
+        home / "AppData" / "Local" / "Google" / "Chrome" / "User Data",
+        home / "Library" / "Application Support" / "Google" / "Chrome",
+        home / ".config" / "google-chrome",
+        home / ".config" / "chromium",
+    ]
 
-    Also removes Chrome's stale Singleton lock files.  When Chrome is force-killed
-    (taskkill /F), it leaves SingletonLock / SingletonCookie / SingletonSocket behind.
-    Playwright's launch_persistent_context then sees the profile as still "in use" and
-    HANGS forever on about:blank instead of navigating - exactly the stuck state the
-    user reported.  Removing these stale locks lets the launch proceed.
-    """
+
+def _remove_stale_locks():
+    """Delete Chrome's Singleton lock files so a profile is not seen as 'in use'."""
+    for root in _chrome_lock_roots():
+        if not root.exists():
+            continue
+        candidates = [root] + ([p for p in root.iterdir() if p.is_dir()] if root.is_dir() else [])
+        try:
+            candidates = list(dict.fromkeys(candidates))
+        except Exception:
+            pass
+        for folder in candidates:
+            for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+                try:
+                    (folder / lock).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+
+def _chrome_procs():
+    """Return True if any Chrome/Chromium process is running."""
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True, timeout=20)
-            # Kill any helper/background Chrome processes too (crashpad, etc.)
-            subprocess.run(["taskkill", "/F", "/IM", "chrome_proxy.exe"], capture_output=True, timeout=10)
-        else:
-            subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, timeout=20)
-        time.sleep(2)
+            out = subprocess.run(["tasklist"], capture_output=True, text=True, timeout=10).stdout
+            return "chrome.exe" in out.lower()
+        out = subprocess.run(["pgrep", "-l", "chrome"], capture_output=True, text=True, timeout=10).stdout
+        return "chrome" in out.lower()
+    except Exception:
+        return False
 
-        # Remove stale singleton lock files from the profile dir(s) so a re-launch
-        # is not blocked by a fake "Chrome is already running" lock.
-        home = Path.home()
-        profile_roots = [
-            home / "AppData" / "Local" / "Google" / "Chrome" / "User Data",
-            home / "Library" / "Application Support" / "Google" / "Chrome",
-            home / ".config" / "google-chrome",
-            home / ".config" / "chromium",
-        ]
-        for root in profile_roots:
-            if not root.exists():
-                continue
-            # Chrome also creates lock files inside each profile subfolder.
-            candidates = [root] + [p for p in root.iterdir() if p.is_dir()] if root.is_dir() else [root]
-            for folder in candidates:
-                for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
-                    try:
-                        (folder / lock).unlink(missing_ok=True)
-                    except Exception:
-                        pass
+
+def close_chrome():
+    """Force-close every Chrome/Chromium process and verify it is actually gone.
+
+    This is the key to fixing the 'launch_persistent_context: Timeout' error. Chrome is
+    a single-instance browser per user-data-dir: if ANY chrome.exe is still alive (even a
+    background/helper process, or a leftover instance from a previous bot run that hung),
+    a new launch simply hands off to the existing one and Playwright never receives a
+    connection - so it times out after 60s. We therefore kill ALL chrome.exe processes,
+    wait until NONE remain, and delete the stale Singleton lock files the kill leaves behind.
+    """
+    try:
+        for attempt in range(6):
+            if not _chrome_procs():
+                break
+            try:
+                if sys.platform == "win32":
+                    # /T kills child processes, /F forces, /IM matches the image name.
+                    subprocess.run(["taskkill", "/F", "/T", "/IM", "chrome.exe"],
+                                   capture_output=True, timeout=20)
+                    subprocess.run(["taskkill", "/F", "/T", "/IM", "chrome_proxy.exe"],
+                                   capture_output=True, timeout=10)
+                    subprocess.run(["taskkill", "/F", "/T", "/IM", "msedge.exe"],
+                                   capture_output=True, timeout=5)
+                else:
+                    subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, timeout=20)
+            except Exception:
+                pass
+            time.sleep(2)
+
+        # Delete stale Singleton lock files left behind by the forced kill.
+        _remove_stale_locks()
         time.sleep(1)
     except Exception:
         pass
@@ -994,47 +1028,54 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 print("  profile folder:", profile_full)
                 emit("status", status="Preparing Chrome profile '%s'..." % profile_name)
 
-                # Chrome locks a profile while it is running, so Playwright CANNOT launch a
-                # second instance on it (this was the endless 'stuck' hang). Close any running
-                # Chrome first, then launch profile '%s' directly. Playwright connects over a
-                # pipe, so Chrome 136+'s "remote debugging requires a non-default data dir"
-                # restriction does NOT apply - no debug port needed.
-                if chrome_is_running():
-                    print("Chrome is running. Closing it so the bot can use profile '%s'... (your login is saved)" % profile_name)
-                    emit("status", status="Closing Chrome so the bot can use profile '%s'..." % profile_name)
-                    close_chrome()
+                # Chrome is a single-instance browser per user-data-dir: if ANY chrome.exe
+                # is alive, a new launch hands off to it and Playwright never connects (the
+                # 60s launch timeout). So ALWAYS force-close Chrome first and verify it is
+                # gone, regardless of the cheap is-running check. Playwright then launches
+                # profile '%s' over a pipe (no debug port needed, so Chrome 136 is fine).
+                print("Closing any running Chrome so the bot can use profile '%s'... (your login is saved)" % profile_name)
+                emit("status", status="Closing Chrome so the bot can use profile '%s'..." % profile_name)
+                close_chrome()
 
                 print("Launching profile '%s'..." % profile_name)
                 emit("status", status="Opening your real Chrome profile '%s'..." % profile_name)
-                try:
-                    # Suppress Chrome's first-run/restore dialogs and stalling flags so the
-                    # page can load cleanly. Use channel='chrome' (rather than only pointing
-                    # executable_path) so Playwright launches the user's real installed Chrome
-                    # the way it expects - without channel, launch_persistent_context can hang
-                    # on about:blank with a personal profile.
-                    launch_args = [
-                        "--profile-directory=%s" % profile_name,
-                        "--no-first-run",
-                        "--no-default-browser-check",
-                        "--no-sandbox",
-                        "--disable-gpu",
-                        "--disable-features=TranslateUI",
-                    ]
-                    # channel='chrome' makes Playwright launch the user's real installed
-                    # Google Chrome the way it expects, which avoids the about:blank hang
-                    # that happens when using only executable_path with a personal profile.
-                    ctx = p.chromium.launch_persistent_context(
-                        pdir,
-                        channel="chrome",
-                        headless=False,
-                        args=launch_args,
-                        viewport=None,
-                        locale="en-US",
-                        timeout=60000,
-                    )
-                except Exception as e:
-                    msg = str(e)
-                    emit("error", message="Could not open Chrome profile '%s': %s" % (profile_name, msg[:220]))
+                launch_args = [
+                    "--profile-directory=%s" % profile_name,
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--no-sandbox",
+                    "--disable-gpu",
+                    "--disable-features=TranslateUI",
+                ]
+                ctx = None
+                last_err = None
+                # Retry the launch: the first attempt can time out if a Chrome process was
+                # still tearing down; clearing again and retrying usually succeeds.
+                for attempt in range(3):
+                    try:
+                        ctx = p.chromium.launch_persistent_context(
+                            pdir,
+                            channel="chrome",
+                            headless=False,
+                            args=launch_args,
+                            viewport=None,
+                            locale="en-US",
+                            timeout=90000,
+                        )
+                        break
+                    except Exception as e:
+                        last_err = e
+                        print("  launch attempt %d timed out: %s" % (attempt + 1, str(e)[:160]))
+                        # Chrome may have left a half-started instance; clear it and retry.
+                        close_chrome()
+                        time.sleep(2)
+                if ctx is None:
+                    emit("error", message=(
+                        "Could not open Chrome profile '%s'. It is likely still in use by a "
+                        "running Chrome / background process. Close ALL Chrome windows, check "
+                        "Task Manager for a leftover chrome.exe, then press START BOT again. "
+                        "Details: %s" % (profile_name, str(last_err)[:200])
+                    ))
                     return
 
                 # The just-launched window starts on about:blank. Navigate it to YouTube,
