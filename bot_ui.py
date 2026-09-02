@@ -47,7 +47,7 @@ STATE = {
     "logs": [],
     "started_at": None,
 }
-STATE_LOCK = threading.Lock()
+STATE_LOCK = threading.RLock()
 BOT_THREAD = None
 
 

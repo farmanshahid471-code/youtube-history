@@ -914,14 +914,17 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
     cdp_url = cfg.get("cdp_url", "http://localhost:9222")
 
     try:
-        # Fail fast (with a clear message) if Playwright's browser isn't installed,
-        # instead of hanging silently with no window.
-        try:
-            _ensure_browser()
-        except RuntimeError as e:
-            print(str(e))
-            emit("error", message=str(e))
-            return
+        # In DEDICATED profile mode we launch Playwright's own Chromium, so verify it
+        # is actually installed (fail fast with a clear message instead of hanging).
+        # In REAL Chrome / CDP mode we use your installed chrome.exe, so this check is
+        # skipped - Playwright's bundled Chromium is irrelevant there.
+        if not use_real_chrome and not connect_cdp:
+            try:
+                _ensure_browser()
+            except RuntimeError as e:
+                print(str(e))
+                emit("error", message=str(e))
+                return
 
         with sync_playwright() as p:
             if connect_cdp:
