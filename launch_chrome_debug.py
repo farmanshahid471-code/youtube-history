@@ -86,6 +86,8 @@ def _parse_args():
     cfg = _load_cfg()
     user_data_dir = None
     profile = cfg.get("chrome_profile_dir", "Default")
+    url = "https://www.youtube.com"
+    auto = False
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -100,13 +102,32 @@ def _parse_args():
             global DEBUG_PORT
             DEBUG_PORT = args[i + 1].strip()
             i += 2
+        elif a == "--url" and i + 1 < len(args):
+            url = args[i + 1].strip()
+            i += 2
+        elif a == "--auto":
+            auto = True
+            i += 1
         else:
             i += 1
-    return user_data_dir, profile
+    return user_data_dir, profile, url, auto
+
+
+def _close_running_chrome():
+    """Close any running Chrome/Chromium so the debug port can bind."""
+    import platform
+    try:
+        if platform.system() == "Windows":
+            subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True)
+        else:
+            subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
+        time.sleep(3)
+    except Exception:
+        pass
 
 
 def main():
-    user_data_dir, profile = _parse_args()
+    user_data_dir, profile, url, auto = _parse_args()
 
     # 1. The full path to the chosen profile folder, e.g. ".../User Data/Profile 5"
     if user_data_dir:
@@ -158,9 +179,8 @@ def main():
     print("  If Chrome is still running it will ignore the port and the bot can't connect.")
     print("=" * 70)
 
-    # Detect whether Chrome (or Chromium) is already running and offer to close it,
-    # otherwise the --remote-debugging-port is silently ignored (the exact failure above).
-    import ctypes
+    # Detect whether Chrome (or Chromium) is already running and close it, otherwise the
+    # --remote-debugging-port is silently ignored (the exact failure you kept seeing).
     import platform
     running_chrome = False
     try:
@@ -174,26 +194,24 @@ def main():
         pass
 
     if running_chrome:
-        print("  >> Chrome appears to be RUNNING already.")
-        print("     It must be closed for the debug port to bind. The helper can close it for you,")
-        print("     but that will also close any tabs you have open (your login is saved).")
-        try:
-            force = input("  Close all Chrome now? Type 'yes' to force-close (or press Enter to abort): ").strip().lower()
-        except EOFError:
-            force = ""
-        if force == "yes":
-            print("  Closing Chrome so the debug port can bind...")
-            try:
-                if platform.system() == "Windows":
-                    subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True)
-                else:
-                    subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
-                time.sleep(3)
-            except Exception as e:
-                print("  [WARN] Could not auto-close Chrome:", e)
+        if auto or url == "http://localhost:5000":
+            # Non-interactive (driven by bot_UI.bat) OR specifically opening the dashboard:
+            # close Chrome automatically so the debug port binds.
+            print("  Chrome is running. Closing it so the debug port can bind (your login is saved)...")
+            _close_running_chrome()
         else:
-            print("  [ABORTED] Chrome is running. Please close it manually and re-run this helper.")
-            sys.exit(1)
+            print("  >> Chrome appears to be RUNNING already.")
+            print("     It must be closed for the debug port to bind.")
+            try:
+                force = input("  Close all Chrome now? Type 'yes' to force-close (or press Enter to abort): ").strip().lower()
+            except EOFError:
+                force = ""
+            if force == "yes":
+                print("  Closing Chrome so the debug port can bind...")
+                _close_running_chrome()
+            else:
+                print("  [ABORTED] Chrome is running. Please close it manually and re-run this helper.")
+                sys.exit(1)
     else:
         print("  Chrome is not running. Proceeding...")
 
@@ -204,7 +222,7 @@ def main():
         f"--profile-directory={profile}",
         "--no-first-run",
         "--no-default-browser-check",
-        "https://www.youtube.com",
+        url,
     ]
     print("\nLaunching Chrome on profile '%s' with remote debugging on port %s ..." % (profile, DEBUG_PORT))
     print("KEEP THIS CHROME WINDOW OPEN. Then click START BOT in the dashboard.")
@@ -217,12 +235,15 @@ def main():
         sys.exit(1)
 
     # 3. Wait for the debug endpoint to respond.
-    for _ in range(6):
+    for _ in range(8):
         time.sleep(2)
         try:
             with urllib.request.urlopen(f"http://localhost:{DEBUG_PORT}/json/version", timeout=5) as r:
                 print("✓ Chrome is ready. Debug endpoint responding (HTTP %s)." % r.status)
-                print("  Now, in the dashboard turn ON 'Attach to running Chrome (CDP)' and press START BOT.")
+                if url == "http://localhost:5000":
+                    print("  Profile '%s' is now open showing the dashboard. The bot will attach to THIS window." % profile)
+                else:
+                    print("  Now, in the dashboard turn ON 'Attach to running Chrome (CDP)' and press START BOT.")
                 return
         except Exception:
             pass
