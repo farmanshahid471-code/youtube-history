@@ -122,13 +122,44 @@ def chrome_is_running() -> bool:
 
 
 def close_chrome():
-    """Force-close any running Chrome/Chromium so Playwright can launch the profile."""
+    """Force-close any running Chrome/Chromium so Playwright can launch the profile.
+
+    Also removes Chrome's stale Singleton lock files.  When Chrome is force-killed
+    (taskkill /F), it leaves SingletonLock / SingletonCookie / SingletonSocket behind.
+    Playwright's launch_persistent_context then sees the profile as still "in use" and
+    HANGS forever on about:blank instead of navigating - exactly the stuck state the
+    user reported.  Removing these stale locks lets the launch proceed.
+    """
     try:
         if sys.platform == "win32":
             subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True, timeout=20)
+            # Kill any helper/background Chrome processes too (crashpad, etc.)
+            subprocess.run(["taskkill", "/F", "/IM", "chrome_proxy.exe"], capture_output=True, timeout=10)
         else:
-            subprocess.run(["pkill", "-f", "chrome"], capture_output=True, timeout=20)
-        time.sleep(3)
+            subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, timeout=20)
+        time.sleep(2)
+
+        # Remove stale singleton lock files from the profile dir(s) so a re-launch
+        # is not blocked by a fake "Chrome is already running" lock.
+        home = Path.home()
+        profile_roots = [
+            home / "AppData" / "Local" / "Google" / "Chrome" / "User Data",
+            home / "Library" / "Application Support" / "Google" / "Chrome",
+            home / ".config" / "google-chrome",
+            home / ".config" / "chromium",
+        ]
+        for root in profile_roots:
+            if not root.exists():
+                continue
+            # Chrome also creates lock files inside each profile subfolder.
+            candidates = [root] + [p for p in root.iterdir() if p.is_dir()] if root.is_dir() else [root]
+            for folder in candidates:
+                for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+                    try:
+                        (folder / lock).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        time.sleep(1)
     except Exception:
         pass
 
@@ -976,18 +1007,27 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 print("Launching profile '%s'..." % profile_name)
                 emit("status", status="Opening your real Chrome profile '%s'..." % profile_name)
                 try:
-                    # Suppress Chrome's first-run/restore dialogs so the page can load cleanly.
-                    args = [
+                    # Suppress Chrome's first-run/restore dialogs and stalling flags so the
+                    # page can load cleanly. Use channel='chrome' (rather than only pointing
+                    # executable_path) so Playwright launches the user's real installed Chrome
+                    # the way it expects - without channel, launch_persistent_context can hang
+                    # on about:blank with a personal profile.
+                    launch_args = [
                         "--profile-directory=%s" % profile_name,
                         "--no-first-run",
                         "--no-default-browser-check",
+                        "--no-sandbox",
+                        "--disable-gpu",
                         "--disable-features=TranslateUI",
                     ]
+                    # channel='chrome' makes Playwright launch the user's real installed
+                    # Google Chrome the way it expects, which avoids the about:blank hang
+                    # that happens when using only executable_path with a personal profile.
                     ctx = p.chromium.launch_persistent_context(
                         pdir,
-                        executable_path=_chrome_exe(),
+                        channel="chrome",
                         headless=False,
-                        args=args,
+                        args=launch_args,
                         viewport=None,
                         locale="en-US",
                         timeout=60000,
