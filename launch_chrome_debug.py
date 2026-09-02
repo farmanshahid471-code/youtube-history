@@ -120,32 +120,50 @@ def main():
             sys.exit(1)
         profile_full = str(Path(ud) / profile)
 
-    if not os.path.isdir(profile_full):
-        print(f"[WARNING] Profile folder not found: {profile_full}")
-        print("          Chrome profiles are usually named 'Default', 'Profile 1', 'Profile 2', ...")
-        print("          List what exists here:")
-        ud = user_data_dir or _real_user_data_dir()
-        if ud and os.path.isdir(ud):
-            for name in sorted(os.listdir(ud)):
-                if name.lower().startswith("profile") or name.lower() == "default":
-                    print(f"            - {name}")
-        print("          Continuing anyway (Chrome may create it), but double-check the name.")
-
     exe = _chrome_exe()
+    ud = user_data_dir or _real_user_data_dir()
+    available = []
+    if ud and os.path.isdir(ud):
+        for name in sorted(os.listdir(ud)):
+            low = name.lower()
+            if low == "default" or low.startswith("profile"):
+                if os.path.isdir(os.path.join(ud, name)):
+                    available.append(name)
+
+    if not os.path.isdir(profile_full):
+        print(f"[ERROR] Profile folder NOT found: {profile_full}")
+        print("        Available Chrome profiles in your 'User Data' folder:")
+        if available:
+            for name in available:
+                print(f"            - {name}" + ("   <-- this one" if name.lower() == profile.lower() else ""))
+        else:
+            print("            (none / could not list)")
+        print("        Fix the profile name (config.json 'chrome_profile_dir' or")
+        print("        launch-chrome-debug.bat --profile \"Profile 5\").")
+        sys.exit(1)
+
     print(f"[1/3] Chrome      : {exe}")
     print(f"[2/3] Using profile: {profile}")
     print(f"      (folder    : {profile_full})")
     print(f"[3/3] Debug port  : {DEBUG_PORT}")
+    if len(available) > 1 and profile.lower() != "default":
+        print(f"      ({len(available)} profiles found; using '{profile}')")
 
     # 2. IMPORTANT reminder: Chrome must be fully closed for the debug port to work.
     print("\n" + "=" * 70)
+    print("  ABOUT TO LAUNCH CHROME WITH PROFILE: %s" % profile.upper())
+    print("  (folder: %s)" % profile_full)
+    print("=" * 70)
     print("  BEFORE CONTINUING: fully QUIT Chrome.")
     print("  - Close every Chrome window.")
     print("  - If Chrome is still running in the background/system tray,")
     print("    it will ignore the debug port and the bot cannot connect.")
     print("  Task Manager: end any 'Google Chrome' / 'chrome.exe' processes.")
     print("=" * 70)
-    reply = input("  Type 'yes' after Chrome is fully closed (or press Enter to continue now): ").strip().lower()
+    try:
+        reply = input("  Type 'yes' after Chrome is fully closed (or press Enter to continue now): ").strip().lower()
+    except EOFError:
+        reply = "yes"  # double-clicked / no stdin: just proceed
 
     args = [
         exe,
