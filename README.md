@@ -20,11 +20,17 @@ A modular automation and market intelligence suite for YouTube creators with ful
 3. Configure your niche, choose content type (Shorts / Videos / Both), review your comment templates, and click **START BOT**.
 4. The bot launches Chromium with your saved session, rotates across your accounts every 15–25 minutes, and streams real-time status and logs to the dashboard.
 
-### Logging in (first run)
-The bot uses one of two browser profiles — choose in the **"Use my real Chrome profile"** toggle:
+### Logging in / using your accounts
+There are three ways the bot gets a browser. Pick in the dashboard's **Browser Profile** section:
 
-- **OFF (default) — dedicated profile `browser_profile/`:** a fresh Chromium window opens. Sign into your Google/YouTube account **in that browser window** and the bot will **automatically detect the login and continue** (you no longer need to press Enter). You only log in once.
-- **ON — your real Chrome session:** the bot reuses your existing Chrome (already signed in, with all your brand/channel accounts). **Close Chrome before starting.** This skips logging in entirely and is the easiest path if you already have your accounts saved.
+1. **OFF (default) — dedicated profile `browser_profile/`:** a fresh Chromium window opens. Sign into your Google/YouTube account **in that browser window** and the bot **automatically detects the login and continues** (no need to press Enter). You only log in once.
+
+2. **ON — your real Chrome session (relaunch):** the bot opens your real Chrome profile (already signed in, with all your channel accounts). ⚠️ **You must fully close Chrome before starting**, because Playwright cannot reuse a profile while that same Chrome is running (the profile is locked and launch hangs).
+
+3. **★ Attach to running Chrome (CDP) — recommended to use the EXACT Chrome you're browsing in:** the bot connects to the Chrome that is *already open*, using the same profile and accounts. Steps:
+   - Run **`launch-chrome-debug.bat`** (Windows) / `./launch-chrome-debug.sh` (Mac/Linux) **once**. This relaunches your Chrome with `--remote-debugging-port=9222` on your real profile.
+   - Keep that Chrome window open.
+   - In the dashboard, turn **ON** *"Attach to running Chrome (CDP)"*, then click **START BOT**. The bot attaches to your open Chrome — no logout, no re-login, no closing Chrome.
 
 ---
 

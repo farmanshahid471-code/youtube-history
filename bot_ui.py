@@ -416,6 +416,23 @@ HTML_PAGE = """<!DOCTYPE html>
               </p>
             </div>
 
+            <!-- Attach to Running Chrome (CDP) -->
+            <div class="p-3.5 rounded-xl bg-indigo-500/10 border border-indigo-500/30 space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold text-indigo-200 flex items-center space-x-2">
+                  <i class="fas fa-plug text-indigo-300"></i>
+                  <span>Attach to running Chrome (CDP)</span>
+                </span>
+                <input id="cfgConnectCdp" type="checkbox" class="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 bg-slate-800 border-slate-700">
+              </div>
+              <p class="text-[11px] text-slate-400 leading-relaxed">
+                <strong class="text-indigo-300">ON</strong> = the bot connects to the Chrome that is
+                ALREADY open (same profile & accounts you're using right now).
+                Keep Chrome open; first run <code>launch-chrome-debug.bat</code> once so Chrome
+                exposes the debug port. This is the easiest way to use your existing accounts.
+              </p>
+            </div>
+
             <!-- Account Rotation Settings -->
             <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2.5">
               <div class="flex items-center justify-between">
@@ -574,6 +591,7 @@ HTML_PAGE = """<!DOCTYPE html>
         document.getElementById('cfgContentType').value = (cfg.trending && cfg.trending.content_type) || 'both';
         document.getElementById('cfgFeedSource').value = (cfg.trending && cfg.trending.source) || 'trending_and_niche';
         document.getElementById('cfgRealChrome').checked = !!cfg.use_real_chrome;
+        document.getElementById('cfgConnectCdp').checked = !!cfg.connect_cdp;
 
         document.getElementById('cfgWatchSec').value = cfg.play_seconds_per_video || 40;
         document.getElementById('cfgWatchJitter').value = cfg.play_jitter ?? 12;
@@ -617,6 +635,8 @@ HTML_PAGE = """<!DOCTYPE html>
         ...configCache,
         niche: document.getElementById('cfgNiche').value.trim(),
         use_real_chrome: document.getElementById('cfgRealChrome').checked,
+        connect_cdp: document.getElementById('cfgConnectCdp').checked,
+        cdp_url: configCache.cdp_url || 'http://localhost:9222',
         play_seconds_per_video: parseInt(document.getElementById('cfgWatchSec').value) || 40,
         play_jitter: parseInt(document.getElementById('cfgWatchJitter').value) || 12,
         break_every: parseInt(document.getElementById('cfgBreakEvery').value) || 8,
@@ -929,7 +949,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 STATE["stats"] = {"watched": 0, "likes": 0, "comments": 0, "subs": 0, "rotations": 0}
 
             add_log("Starting bot worker thread...", "system")
-            use_real_chrome = "--real-chrome" in sys.argv or bool(cfg.get("use_real_chrome", False))
+            use_real_chrome = "--real-chrome" in sys.argv or "--cdp" in sys.argv or bool(cfg.get("use_real_chrome", False))
             BOT_THREAD = threading.Thread(
                 target=bot_worker,
                 args=(cfg, use_real_chrome, None),

@@ -47,6 +47,8 @@ DEFAULT_COMMENTS = [
 DEFAULTS = {
     "niche": "",
     "use_real_chrome": False,
+    "connect_cdp": False,
+    "cdp_url": "http://localhost:9222",
     "output_dir": "output",
     "play_seconds_per_video": 40,
     "play_jitter": 12,
@@ -856,9 +858,32 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
 
     emit("started", niche=niche, xlsx_path=str(xlsx_path))
 
+    # Browser connection mode
+    connect_cdp = bool(cfg.get("connect_cdp", False))
+    cdp_url = cfg.get("cdp_url", "http://localhost:9222")
+
     try:
         with sync_playwright() as p:
-            if use_real_chrome:
+            if connect_cdp:
+                # ATTACH to a Chrome you are already running (the SAME profile/window you
+                # are browsing in). Chrome must be started with --remote-debugging-port=9222;
+                # use the provided launch-chrome-debug.bat / .sh helper to start it that way.
+                print("Connecting to your running Chrome via CDP:", cdp_url)
+                emit("status", status=f"Connecting to your open Chrome at {cdp_url}...")
+                try:
+                    browser = p.chromium.connect_over_cdp(cdp_url)
+                except Exception as e:
+                    print("Could not connect to Chrome. Launch it with --remote-debugging-port=9222 (see README).")
+                    emit("error", message="Cannot attach to Chrome. Start it with --remote-debugging-port=9222 (use launch-chrome-debug.bat). Details: %s" % str(e)[:120])
+                    return
+                # Use the default context that already holds your logged-in session.
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                emit("status", status="Attached to your open Chrome. Locating YouTube...")
+                print("Attached to running Chrome. Navigating to YouTube...")
+                page.goto("https://www.youtube.com", timeout=60000)
+
+            elif use_real_chrome:
                 pdir = profile_dir or real_chrome_profile_dir()
                 if not pdir:
                     print("Could not detect your Chrome profile. Pass: --profile-dir \"/path/to/Chrome/User Data\"")
@@ -866,18 +891,31 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                     return
                 print("Using real Chrome profile:", pdir)
                 emit("status", status="Opening your Chrome profile... Make sure Chrome is fully closed.")
-                # Use a PERSISTENT context so Playwright owns and reuses the real profile.
-                # (p.chromium.launch with --user-data-dir hangs forever if Chrome is already
-                # running with that profile, which is why the bot previously appeared stuck.)
-                ctx = p.chromium.launch_persistent_context(
-                    pdir,
-                    executable_path=_chrome_exe(),
-                    headless=False,
-                    args=["--profile-directory=Default"],
-                    viewport=None,
-                    locale="en-US",
-                    timeout=90000,  # don't hang forever if the profile is locked
-                )
+                # IMPORTANT: Playwright cannot reuse a Chrome profile while that same Chrome
+                # is open - the profile dir is locked, so the launch hangs. If Chrome is open,
+                # either close it, OR use the CDP "attach to running Chrome" mode instead.
+                try:
+                    ctx = p.chromium.launch_persistent_context(
+                        pdir,
+                        executable_path=_chrome_exe(),
+                        headless=False,
+                        args=["--profile-directory=Default"],
+                        viewport=None,
+                        locale="en-US",
+                        timeout=60000,
+                    )
+                except Exception as e:
+                    msg = str(e)
+                    if "in use" in msg.lower() or "locked" in msg.lower() or "user data directory" in msg.lower():
+                        print("Chrome is already running with this profile.")
+                        emit("error", message="Chrome is open using this profile. Close all Chrome windows, or turn ON 'Attach to running Chrome' and use launch-chrome-debug.bat.")
+                    else:
+                        print("Failed to launch Chrome:", msg)
+                        emit("error", message="Failed to launch Chrome: %s" % msg[:200])
+                    return
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto("https://www.youtube.com", timeout=60000)
+
             else:
                 dedicated.mkdir(exist_ok=True)
                 emit("status", status="Opening a fresh browser window (dedicated profile)...")
@@ -887,11 +925,10 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                     args=["--start-maximized"],
                     viewport=None,
                     locale="en-US",
-                    timeout=90000,
+                    timeout=60000,
                 )
-
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto("https://www.youtube.com", timeout=60000)
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto("https://www.youtube.com", timeout=60000)
 
             if not use_real_chrome and not headless:
                 # Give the user a real window of time to sign in (works in CLI and UI mode).
@@ -1092,10 +1129,13 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 write_xlsx(rows, xlsx_path, niche)
             except Exception:
                 pass
-            try:
-                ctx.close()
-            except Exception:
-                pass
+            # Only close the context we launched ourselves.  When we attached to your
+            # already-running Chrome via CDP we must NOT close it - it's your browser.
+            if not connect_cdp:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
 
     except KeyboardInterrupt:
         print("\nStopped by user (Ctrl+C).")
@@ -1136,10 +1176,14 @@ def main():
             cfg["niche"] = sys.argv[idx + 1].strip()
 
     use_real_chrome = "--real-chrome" in sys.argv or bool(cfg.get("use_real_chrome", False))
-    profile_dir = None
+    if "--cdp" in sys.argv:
+        cfg["connect_cdp"] = True
+        use_real_chrome = True  # attaching to a real Chrome implies real profile
     for i, a in enumerate(sys.argv):
         if a == "--profile-dir" and i + 1 < len(sys.argv):
             profile_dir = sys.argv[i + 1]
+        if a == "--cdp-url" and i + 1 < len(sys.argv):
+            cfg["cdp_url"] = sys.argv[i + 1]
     headless = "--headless" in sys.argv
 
     # Override flags
