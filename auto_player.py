@@ -944,7 +944,11 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 emit("status", status="Attached to your open Chrome. Locating YouTube...")
                 print("Attached to running Chrome. Navigating to YouTube...")
-                page.goto("https://www.youtube.com", timeout=60000)
+                page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=60000)
+                try:
+                    _dismiss_banners(page)
+                except Exception:
+                    pass
 
             elif use_real_chrome:
                 pdir = profile_dir or real_chrome_profile_dir()
@@ -972,11 +976,18 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 print("Launching profile '%s'..." % profile_name)
                 emit("status", status="Opening your real Chrome profile '%s'..." % profile_name)
                 try:
+                    # Suppress Chrome's first-run/restore dialogs so the page can load cleanly.
+                    args = [
+                        "--profile-directory=%s" % profile_name,
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-features=TranslateUI",
+                    ]
                     ctx = p.chromium.launch_persistent_context(
                         pdir,
                         executable_path=_chrome_exe(),
                         headless=False,
-                        args=["--profile-directory=%s" % profile_name],
+                        args=args,
                         viewport=None,
                         locale="en-US",
                         timeout=60000,
@@ -985,8 +996,36 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                     msg = str(e)
                     emit("error", message="Could not open Chrome profile '%s': %s" % (profile_name, msg[:220]))
                     return
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                page.goto("https://www.youtube.com", timeout=60000)
+
+                # The just-launched window starts on about:blank. Navigate it to YouTube,
+                # using 'domcontentloaded' so we don't hang on YouTube's heavy/slow load
+                # event. If the first tab is stale, reuse a page that's already pointing at
+                # a URL (Chrome may restore tabs), otherwise use the first page.
+                page = None
+                for cand in (ctx.pages or []):
+                    try:
+                        url = cand.url or ""
+                    except Exception:
+                        url = ""
+                    if url and not url.startswith("about:"):
+                        page = cand
+                        break
+                if page is None:
+                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+
+                print("Navigating to YouTube...")
+                emit("status", status="Loading YouTube in your Chrome profile '%s'..." % profile_name)
+                try:
+                    page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=60000)
+                except Exception as e:
+                    print("First navigation warning:", str(e)[:120])
+                # Let YouTube settle, then dismiss any consent/cookie banners.
+                try:
+                    page.wait_for_timeout(1500)
+                    _dismiss_banners(page)
+                except Exception:
+                    pass
+                emit("status", status="YouTube loaded. Detecting your signed-in accounts...")
 
             else:
                 dedicated.mkdir(exist_ok=True)
@@ -994,13 +1033,17 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 ctx = p.chromium.launch_persistent_context(
                     str(dedicated),
                     headless=headless,
-                    args=["--start-maximized"],
+                    args=["--start-maximized", "--no-first-run", "--no-default-browser-check"],
                     viewport=None,
                     locale="en-US",
                     timeout=60000,
                 )
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                page.goto("https://www.youtube.com", timeout=60000)
+                page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=60000)
+                try:
+                    _dismiss_banners(page)
+                except Exception:
+                    pass
 
             if not use_real_chrome and not headless:
                 # Give the user a real window of time to sign in (works in CLI and UI mode).
