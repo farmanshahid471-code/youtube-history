@@ -46,6 +46,7 @@ DEFAULT_COMMENTS = [
 
 DEFAULTS = {
     "niche": "",
+    "use_real_chrome": False,
     "output_dir": "output",
     "play_seconds_per_video": 40,
     "play_jitter": 12,
@@ -106,6 +107,67 @@ def real_chrome_profile_dir():
 
 def stopped() -> bool:
     return STOP_FILE.exists()
+
+
+def _is_signed_in(page) -> bool:
+    """Best-effort check: is the session logged into a YouTube/Google account?"""
+    try:
+        avatar = page.query_selector(
+            "button#avatar-btn, ytd-topbar-menu-button-renderer #avatar-btn, yt-img-shadow#avatar"
+        )
+        if avatar and avatar.is_visible():
+            return True
+        # If we can still see a "Sign in" button we are NOT signed in.
+        sign_in = page.query_selector(
+            "a[href*='ServiceLogin'], ytd-button-renderer a[aria-label*='Sign in' i]"
+        )
+        if sign_in and sign_in.is_visible():
+            return False
+    except Exception:
+        pass
+    return False
+
+
+def wait_for_login(page, status_callback=None, max_wait: int = 180) -> bool:
+    """
+    Blocks (up to max_wait seconds) until the user has signed into YouTube in the
+    opened browser window. Returns True when signed in, False on timeout.
+
+    Works in BOTH CLI and Web-UI mode: instead of relying on a console `input()`
+    (which dead-locks when launched from the dashboard), we poll the page and emit
+    status events so the UI can tell the user to log in.
+    """
+    def emit(event_type, **data):
+        if status_callback:
+            try:
+                status_callback({"type": event_type, "timestamp": datetime.now().isoformat(), **data})
+            except Exception:
+                pass
+
+    print("\nBrowser is open. If this is your first run, please log into your Google/YouTube")
+    print("account in the browser window that just opened. The bot will continue automatically")
+    print("once it detects that you are signed in.\n")
+
+    if _is_signed_in(page):
+        print("[Login] Account already signed in. Continuing...")
+        return True
+
+    emit("status", status="Waiting for login — please sign in to YouTube in the browser window...")
+    print("[Login] Waiting for you to sign in... (up to %d seconds)" % max_wait)
+
+    start = time.time()
+    while time.time() - start < max_wait:
+        if stopped():
+            return False
+        if _is_signed_in(page):
+            print("[Login] Signed-in detected. Starting automation...")
+            emit("status", status="Login detected — starting automation...")
+            return True
+        time.sleep(3)
+
+    print("[Login] No login detected within %d seconds. Continuing as guest / single account." % max_wait)
+    emit("status", status="No login detected within timeout — continuing as guest.")
+    return False
 
 
 def _chrome_exe():
@@ -720,12 +782,17 @@ def write_xlsx(rows: list, path: Path, niche: str):
 # --------------------------------------------------------------------------
 # Main Engine Runner (callable by CLI or UI thread)
 # --------------------------------------------------------------------------
-def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=False, profile_dir=None, headless=False):
+def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=None, profile_dir=None, headless=False):
     """
     Core automation loop. Emits state callbacks if provided.
     """
     if cfg is None:
         cfg = load_cfg()
+
+    # use_real_chrome can come from the caller OR from config.json.  Default to the
+    # config value when the caller did not explicitly choose (None).
+    if use_real_chrome is None:
+        use_real_chrome = bool(cfg.get("use_real_chrome", False))
 
     niche = (cfg.get("niche") or "").strip()
     dedicated = HERE / "browser_profile"
@@ -818,18 +885,8 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=Fa
             page.goto("https://www.youtube.com", timeout=60000)
 
             if not use_real_chrome and not headless:
-                # CLI mode (no status_callback): wait for the user to log in and press ENTER.
-                # When driven from the Web UI (status_callback provided) we MUST NOT block on
-                # console input, otherwise the dashboard looks like the bot is hung.
-                if status_callback is None:
-                    print("\nBrowser is open. If this is your first run, log into your Google Account.")
-                    print("Once logged in with your accounts, press ENTER to begin...")
-                    try:
-                        input()
-                    except EOFError:
-                        time.sleep(15)
-                else:
-                    print("UI mode: continuing without a console prompt (log in from the browser window if needed).")
+                # Give the user a real window of time to sign in (works in CLI and UI mode).
+                wait_for_login(page, status_callback=status_callback)
 
             # Account roster resolution
             configured_accounts = rot_cfg.get("accounts", [])
@@ -1069,7 +1126,7 @@ def main():
         if idx + 1 < len(sys.argv):
             cfg["niche"] = sys.argv[idx + 1].strip()
 
-    use_real_chrome = "--real-chrome" in sys.argv
+    use_real_chrome = "--real-chrome" in sys.argv or bool(cfg.get("use_real_chrome", False))
     profile_dir = None
     for i, a in enumerate(sys.argv):
         if a == "--profile-dir" and i + 1 < len(sys.argv):

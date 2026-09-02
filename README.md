@@ -15,8 +15,16 @@ A modular automation and market intelligence suite for YouTube creators with ful
 1. **Windows:** Double-click **`bot_UI.bat`**  
    **Mac/Linux:** Run **`./bot_UI.sh`** (or `python bot_ui.py`)
 2. The browser opens the interactive control panel at **`http://localhost:5000`**.
+   > **If `bot_UI.bat` closes instantly:** run it from a terminal so you can read the error —
+   > Win+R → `cmd` → `cd /d "<this folder>"` → `bot_UI.bat`. The window now pauses on any error instead of vanishing.
 3. Configure your niche, choose content type (Shorts / Videos / Both), review your comment templates, and click **START BOT**.
 4. The bot launches Chromium with your saved session, rotates across your accounts every 15–25 minutes, and streams real-time status and logs to the dashboard.
+
+### Logging in (first run)
+The bot uses one of two browser profiles — choose in the **"Use my real Chrome profile"** toggle:
+
+- **OFF (default) — dedicated profile `browser_profile/`:** a fresh Chromium window opens. Sign into your Google/YouTube account **in that browser window** and the bot will **automatically detect the login and continue** (you no longer need to press Enter). You only log in once.
+- **ON — your real Chrome session:** the bot reuses your existing Chrome (already signed in, with all your brand/channel accounts). **Close Chrome before starting.** This skips logging in entirely and is the easiest path if you already have your accounts saved.
 
 ---
 

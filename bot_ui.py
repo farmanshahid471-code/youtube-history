@@ -398,6 +398,24 @@ HTML_PAGE = """<!DOCTYPE html>
               </select>
             </div>
 
+            <!-- Browser Profile Choice -->
+            <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold text-slate-200 flex items-center space-x-2">
+                  <i class="fab fa-chrome text-blue-400"></i>
+                  <span>Use my real Chrome profile</span>
+                </span>
+                <input id="cfgRealChrome" type="checkbox" class="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 bg-slate-800 border-slate-700">
+              </div>
+              <p class="text-[11px] text-slate-500 leading-relaxed">
+                <strong class="text-slate-400">OFF</strong> = the bot opens a fresh, dedicated profile
+                (<code>browser_profile/</code>) and you log into Google once in that window.<br>
+                <strong class="text-slate-400">ON</strong> = the bot reuses your existing
+                Chrome session (already logged in, all your channel accounts saved).
+                Close Chrome before starting if you enable this.
+              </p>
+            </div>
+
             <!-- Account Rotation Settings -->
             <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2.5">
               <div class="flex items-center justify-between">
@@ -555,6 +573,7 @@ HTML_PAGE = """<!DOCTYPE html>
         document.getElementById('cfgNiche').value = cfg.niche || '';
         document.getElementById('cfgContentType').value = (cfg.trending && cfg.trending.content_type) || 'both';
         document.getElementById('cfgFeedSource').value = (cfg.trending && cfg.trending.source) || 'trending_and_niche';
+        document.getElementById('cfgRealChrome').checked = !!cfg.use_real_chrome;
 
         document.getElementById('cfgWatchSec').value = cfg.play_seconds_per_video || 40;
         document.getElementById('cfgWatchJitter').value = cfg.play_jitter ?? 12;
@@ -597,6 +616,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const newCfg = {
         ...configCache,
         niche: document.getElementById('cfgNiche').value.trim(),
+        use_real_chrome: document.getElementById('cfgRealChrome').checked,
         play_seconds_per_video: parseInt(document.getElementById('cfgWatchSec').value) || 40,
         play_jitter: parseInt(document.getElementById('cfgWatchJitter').value) || 12,
         break_every: parseInt(document.getElementById('cfgBreakEvery').value) || 8,
@@ -909,9 +929,10 @@ class UIHandler(BaseHTTPRequestHandler):
                 STATE["stats"] = {"watched": 0, "likes": 0, "comments": 0, "subs": 0, "rotations": 0}
 
             add_log("Starting bot worker thread...", "system")
+            use_real_chrome = "--real-chrome" in sys.argv or bool(cfg.get("use_real_chrome", False))
             BOT_THREAD = threading.Thread(
                 target=bot_worker,
-                args=(cfg, "--real-chrome" in sys.argv, None),
+                args=(cfg, use_real_chrome, None),
                 daemon=True,
             )
             BOT_THREAD.start()
