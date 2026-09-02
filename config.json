@@ -1,5 +1,5 @@
 {
-  "niche": "PASTE YOUR NICHE HERE (e.g. tech gadgets under $50, Islamic reminders, car detailing)",
+  "niche": "tech gadgets under $50",
   "api_key": "",
   "top_channels": 8,
   "videos_per_channel": 15,
@@ -11,5 +11,38 @@
   "play_jitter": 12,
   "break_every": 8,
   "break_seconds": [90, 180],
-  "max_videos": 0
+  "max_videos": 0,
+  "account_rotation": {
+    "enabled": true,
+    "rotate_minutes": [15, 25],
+    "accounts": []
+  },
+  "trending": {
+    "enabled": true,
+    "content_type": "both",
+    "source": "trending_and_niche",
+    "categories": ["trending", "gaming", "music"]
+  },
+  "engagement": {
+    "auto_like": true,
+    "like_probability": 0.8,
+    "auto_comment": true,
+    "comment_probability": 0.5,
+    "auto_subscribe": true,
+    "subscribe_probability": 0.25,
+    "comment_pool": [
+      "Great video, thanks for sharing!",
+      "Really well explained, enjoyed this one 👍",
+      "Super helpful content, keep it up!",
+      "Loved the breakdown on this. Very insightful!",
+      "Quality video right here 🔥",
+      "This was really informative, thanks!",
+      "Awesome presentation and pacing 👌",
+      "Nice video! Learned something new today.",
+      "Great editing and clear explanations!",
+      "Solid content as always 👏",
+      "Subscribed! Looking forward to more videos.",
+      "The explanation at the beginning was super clear 🙌"
+    ]
+  }
 }

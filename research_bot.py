@@ -124,18 +124,18 @@ def api_channels(cfg) -> list:
     if not items:
         return []
     ids = [i["id"]["channelId"] for i in items]
-    ch = _get(API + "/channels", key, part="snippet,contentStatistics", id=",".join(ids))
+    ch = _get(API + "/channels", key, part="snippet,statistics", id=",".join(ids))
     out = []
     for c in ch.get("items", []):
         s = c.get("snippet", {})
-        st = c.get("contentStatistics", {}) or {}
+        st = c.get("statistics", {}) or {}
         handle = (s.get("customUrl") or "").lstrip("@")
         out.append({
             "channel": s.get("title", ""),
             "handle": "@" + handle if handle else "",
             "url": ("https://youtube.com/@%s" % handle) if handle
                    else "https://www.youtube.com/channel/" + c["id"],
-            "subscribers": int(st.get("hiddenSubscriberCount", 0) or 0),
+            "subscribers": int(st.get("subscriberCount", 0) or 0),
             "total_videos": int(st.get("videoCount", 0) or 0),
             "id": c["id"],
         })

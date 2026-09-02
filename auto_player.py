@@ -1,32 +1,17 @@
 #!/usr/bin/env python3
 """
-Auto-Player  (single account, watch-only)
-=========================================
-Opens your real browser (Chrome via Playwright), searches your niche, and
-watches videos/Shorts hands-free — ONE account, no rotation, no auto-likes,
-no auto-comments. It READS each video's real stats off the page and writes
-an Excel "engagement worksheet" so you can decide what to genuinely engage
-with. You do the actual like/comment yourself (that's what keeps it real).
+Auto-Player with Multi-Account Rotation, Auto-Like, Auto-Comment & Auto-Subscribe
+================================================================================
+Runs browser automation on YouTube to:
+  1. Discover multiple YouTube brand/channel accounts within a single Chrome profile.
+  2. Rotate through accounts one by one every 15 to 25 minutes (configurable).
+  3. Browse and watch trending videos (global trending feeds & niche trending, videos/shorts).
+  4. Automatically like videos with human-like timing and probability.
+  5. Automatically leave natural, customizable comments from a comment pool.
+  6. Automatically subscribe to creators with randomized probability.
+  7. Log all watched videos, likes, comments, subscriptions, and metrics to Excel & CSV.
 
-Stop it any time:
-  - Ctrl+C in the terminal, OR
-  - create a file named  stop.txt  in this folder, OR
-  - close the browser window, OR
-  - set "max_videos" in config.json (0 = unlimited)
-
-First run:
-  1) pip install -r requirements.txt
-  2) python -m playwright install chromium     (one time)
-  3) python auto_player.py
-     A browser opens. Default: a DEDICATED profile (browser_profile/) —
-     optionally log into ONE account once; it stays logged in.
-     To use your everyday Chrome profile: close Chrome, then
-       python auto_player.py --real-chrome
-       (Mac/Linux: --profile-dir "/path/to/Chrome/User Data")
-
-Output:
-  output/engagement_<date>.xlsx   <- the Excel worksheet (one row per video)
-  output/watch_log.csv            <- quick append-only log
+Can be run directly via CLI or controlled via the Bot UI (`python bot_ui.py` / `bot_UI.bat`).
 """
 from __future__ import annotations
 
@@ -44,6 +29,21 @@ HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 STOP_FILE = HERE / "stop.txt"
 
+DEFAULT_COMMENTS = [
+    "Great video, thanks for sharing!",
+    "Really well explained, enjoyed this one 👍",
+    "Super helpful content, keep it up!",
+    "Loved the breakdown on this. Very insightful!",
+    "Quality video right here 🔥",
+    "This was really informative, thanks!",
+    "Awesome presentation and pacing 👌",
+    "Nice video! Learned something new today.",
+    "Great editing and clear explanations!",
+    "Solid content as always 👏",
+    "Subscribed! Looking forward to more videos.",
+    "The explanation at the beginning was super clear 🙌",
+]
+
 DEFAULTS = {
     "niche": "",
     "output_dir": "output",
@@ -52,15 +52,41 @@ DEFAULTS = {
     "break_every": 8,
     "break_seconds": [90, 180],
     "max_videos": 0,
+    "account_rotation": {
+        "enabled": True,
+        "rotate_minutes": [15, 25],
+        "accounts": [],
+    },
+    "trending": {
+        "enabled": True,
+        "content_type": "both",  # "both", "videos", "shorts"
+        "source": "trending_and_niche",
+        "categories": ["trending", "gaming", "music"],
+    },
+    "engagement": {
+        "auto_like": True,
+        "like_probability": 0.8,
+        "auto_comment": True,
+        "comment_probability": 0.5,
+        "auto_subscribe": True,
+        "subscribe_probability": 0.25,
+        "comment_pool": DEFAULT_COMMENTS,
+    },
 }
 
 
 def load_cfg() -> dict:
     cfg = dict(DEFAULTS)
     try:
-        cfg.update(json.loads(CONFIG.read_text(encoding="utf-8")))
-    except FileNotFoundError:
-        pass
+        if CONFIG.exists():
+            user_cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
+            for k, v in user_cfg.items():
+                if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+                    cfg[k].update(v)
+                else:
+                    cfg[k] = v
+    except Exception as e:
+        print(f"[Warning] Failed to read {CONFIG.name}: {e}")
     return cfg
 
 
@@ -90,37 +116,77 @@ def _chrome_exe():
             Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe",
         ]
     else:
-        cands = [Path("/usr/bin/google-chrome"), Path("/usr/bin/chromium-browser"),
-                 Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")]
+        cands = [
+            Path("/usr/bin/google-chrome"),
+            Path("/usr/bin/chromium-browser"),
+            Path("/usr/bin/chromium"),
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        ]
     for c in cands:
         if c.exists():
             return str(c)
     return "chrome"
 
 
+def _dismiss_banners(page):
+    """Dismisses consent, cookie, or info overlays."""
+    selectors = [
+        "button[aria-label*='Accept all']",
+        "button[aria-label*='Accept the use']",
+        "tp-yt-paper-button#agree-button",
+        "ytd-button-renderer button#agree-button",
+        "button#accept-button",
+        "yt-button-shape button[aria-label*='Accept']",
+        "button[aria-label*='Reject all']",
+        "ytd-button-renderer:has-text('No thanks') button",
+        "button[aria-label='Dismiss']",
+        "tp-yt-paper-dialog button[aria-label*='Dismiss' i]",
+    ]
+    for sel in selectors:
+        try:
+            b = page.query_selector(sel)
+            if b and b.is_visible():
+                b.click()
+                time.sleep(1)
+                return
+        except Exception:
+            pass
+
+
 def _scrape_meta(page) -> dict:
-    """Best-effort: read view count, channel, and duration off the video page."""
+    """Best-effort: read view count, channel name, and duration off the active page."""
     meta = {"views": "", "channel": "", "duration": ""}
-    # view count (long video + shorts variants)
-    for sel in ("ytd-video-view-count",
-                "ytd-video-primary-info-renderer #view-count",
-                "ytd-watch-metadata #count",
-                "yt-content-view-engine-view-model #count"):
+    # 1. View count
+    for sel in (
+        "ytd-watch-metadata #count yt-formatted-string",
+        "ytd-watch-metadata #count",
+        "ytd-video-view-count",
+        "ytd-video-primary-info-renderer #view-count",
+        "yt-content-view-engine-view-model #count",
+        "span.yt-view-count-renderer",
+    ):
         try:
             el = page.query_selector(sel)
             if el:
                 txt = (el.text_content() or "")
-                m = re.search(r"([\d.,]+)", txt.replace("views", ""))
+                m = re.search(r"([\d.,]+)", txt.replace("views", "").replace("watching", ""))
                 if m:
                     num = m.group(1).replace(",", "").replace(".", "")
                     if num.isdigit():
                         meta["views"] = int(num)
-                    break
+                        break
         except Exception:
             continue
-    # channel name
-    for sel in ("ytd-channel-name a#channel-name", "ytd-channel-name #channel-name",
-                "yt-formatted-string#channel-name"):
+
+    # 2. Channel name
+    for sel in (
+        "ytd-channel-name a#channel-name",
+        "ytd-channel-name #channel-name",
+        "yt-formatted-string#channel-name",
+        "ytd-video-owner-renderer #channel-name a",
+        "#owner #channel-name",
+        "ytd-reel-video-renderer[is-active] ytd-channel-name a",
+    ):
         try:
             el = page.query_selector(sel)
             if el and (el.text_content() or "").strip():
@@ -128,7 +194,8 @@ def _scrape_meta(page) -> dict:
                 break
         except Exception:
             continue
-    # duration from the <video> element
+
+    # 3. Duration from the <video> element
     try:
         el = page.query_selector("video")
         if el:
@@ -156,181 +223,550 @@ def _flag(views) -> str:
     except (TypeError, ValueError):
         return ""
     if v >= 250000:
-        return "Trending — a genuine comment + like here has the most reach"
+        return "Trending — high reach"
     if v >= 25000:
-        return "Growing — good candidate for a real comment"
+        return "Growing — strong engagement"
     if v < 1000:
-        return "Small creator — a sincere comment genuinely helps them"
+        return "Small creator — supportive reach"
+    return "Standard"
+
+
+# --------------------------------------------------------------------------
+# Multi-Account Detection & Switching
+# --------------------------------------------------------------------------
+def discover_available_accounts(page) -> list[dict]:
+    """
+    Scans the YouTube profile session to discover all channel/brand accounts.
+    Returns list of dicts: [{'index': 0, 'name': 'Channel A', 'handle': '@chA'}, ...]
+    """
+    print("\n[Accounts] Detecting linked YouTube channels in profile...")
+
+    # Strategy 1: Navigate to channel switcher URL
+    try:
+        page.goto("https://www.youtube.com/channel_switcher", timeout=40000)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(3)
+        _dismiss_banners(page)
+
+        items = page.query_selector_all("ytd-account-item-renderer, tp-yt-paper-item")
+        if items:
+            raw = page.evaluate("""() => {
+                const results = [];
+                const els = document.querySelectorAll('ytd-account-item-renderer, tp-yt-paper-item');
+                els.forEach((el, idx) => {
+                    const title = el.querySelector('#channel-title, yt-formatted-string#channel-title, #account-name, .channel-title');
+                    const handle = el.querySelector('#email, yt-formatted-string#email, .email');
+                    const name = title ? title.textContent.trim() : '';
+                    if (name && !name.toLowerCase().includes('create a channel') && !name.toLowerCase().includes('add account')) {
+                        results.push({
+                            index: idx,
+                            name: name,
+                            handle: handle ? handle.textContent.trim() : ''
+                        });
+                    }
+                });
+                return results;
+            }""")
+            if raw and len(raw) > 0:
+                print(f"[Accounts] Found {len(raw)} account(s) via channel_switcher:")
+                for a in raw:
+                    print(f"   [{a['index'] + 1}] {a['name']} {('(' + a['handle'] + ')') if a.get('handle') else ''}")
+                return raw
+    except Exception as ex:
+        print(f"[Accounts] Notice during channel_switcher scan: {str(ex)[:80]}")
+
+    # Strategy 2: Check Avatar Menu
+    try:
+        page.goto("https://www.youtube.com", timeout=40000)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(2)
+        _dismiss_banners(page)
+
+        avatar = page.query_selector("button#avatar-btn, ytd-topbar-menu-button-renderer #avatar-btn, yt-img-shadow#avatar")
+        if avatar:
+            avatar.click()
+            time.sleep(1.5)
+            switch_btn = page.query_selector("ytd-compact-link-renderer:has-text('Switch account'), tp-yt-paper-item:has-text('Switch account')")
+            if switch_btn:
+                switch_btn.click()
+                time.sleep(1.5)
+                raw = page.evaluate("""() => {
+                    const results = [];
+                    const els = document.querySelectorAll('ytd-account-item-renderer');
+                    els.forEach((el, idx) => {
+                        const title = el.querySelector('#channel-title, yt-formatted-string#channel-title, #account-name');
+                        const handle = el.querySelector('#email, yt-formatted-string#email');
+                        const name = title ? title.textContent.trim() : '';
+                        if (name) {
+                            results.push({
+                                index: idx,
+                                name: name,
+                                handle: handle ? handle.textContent.trim() : ''
+                            });
+                        }
+                    });
+                    return results;
+                }""")
+                if raw and len(raw) > 0:
+                    print(f"[Accounts] Found {len(raw)} account(s) via Avatar Menu:")
+                    for a in raw:
+                        print(f"   [{a['index'] + 1}] {a['name']} {('(' + a['handle'] + ')') if a.get('handle') else ''}")
+                    return raw
+    except Exception as ex:
+        print(f"[Accounts] Notice during avatar menu scan: {str(ex)[:80]}")
+
+    print("[Accounts] Single default account / guest session active.")
+    return [{"index": 0, "name": "Active Profile Account", "handle": ""}]
+
+
+def switch_to_account(page, target_idx: int, target_name: str = "") -> str:
+    """
+    Switches the active YouTube session to the specified channel/account.
+    Returns the resolved account name.
+    """
+    label = target_name or f"Account #{target_idx + 1}"
+    print(f"\n" + "=" * 50)
+    print(f"[Account Switcher] Switching to: {label}...")
+    print("=" * 50)
+
+    # Strategy 1: via channel_switcher page
+    try:
+        page.goto("https://www.youtube.com/channel_switcher", timeout=40000)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(3)
+        _dismiss_banners(page)
+
+        switched = page.evaluate("""(target) => {
+            const els = Array.from(document.querySelectorAll('ytd-account-item-renderer, tp-yt-paper-item'));
+            if (!els || els.length === 0) return null;
+            
+            if (typeof target.name === 'string' && target.name.trim().length > 0) {
+                const targetLower = target.name.toLowerCase();
+                for (let i = 0; i < els.length; i++) {
+                    const title = els[i].querySelector('#channel-title, yt-formatted-string#channel-title, #account-name');
+                    const name = title ? title.textContent.trim() : '';
+                    if (name.toLowerCase().includes(targetLower) || targetLower.includes(name.toLowerCase())) {
+                        els[i].click();
+                        return name;
+                    }
+                }
+            }
+            const idx = target.idx % els.length;
+            const title = els[idx].querySelector('#channel-title, yt-formatted-string#channel-title, #account-name');
+            const name = title ? title.textContent.trim() : `Account #${idx + 1}`;
+            els[idx].click();
+            return name;
+        }""", {"idx": target_idx, "name": target_name})
+
+        if switched:
+            time.sleep(4)
+            page.wait_for_load_state("domcontentloaded")
+            print(f"[Account Switcher] Switched successfully to: '{switched}'")
+            return switched
+    except Exception as e:
+        print(f"[Account Switcher] Notice via channel_switcher: {str(e)[:80]}")
+
+    # Strategy 2: via Topbar Avatar Dropdown
+    try:
+        page.goto("https://www.youtube.com", timeout=40000)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(2)
+        _dismiss_banners(page)
+
+        avatar = page.query_selector("button#avatar-btn, ytd-topbar-menu-button-renderer #avatar-btn, yt-img-shadow#avatar")
+        if avatar:
+            avatar.click()
+            time.sleep(1.5)
+            switch_btn = page.query_selector("ytd-compact-link-renderer:has-text('Switch account'), tp-yt-paper-item:has-text('Switch account')")
+            if switch_btn:
+                switch_btn.click()
+                time.sleep(1.5)
+                items = page.query_selector_all("ytd-account-item-renderer")
+                if items:
+                    sel_item = items[target_idx % len(items)]
+                    sel_item.click()
+                    time.sleep(4)
+                    page.wait_for_load_state("domcontentloaded")
+                    print(f"[Account Switcher] Switched to item #{target_idx + 1} via Avatar menu.")
+                    return label
+    except Exception as ex:
+        print(f"[Account Switcher] Notice via avatar dropdown: {str(ex)[:80]}")
+
+    return label
+
+
+# --------------------------------------------------------------------------
+# Automated Liking, Commenting & Subscribing
+# --------------------------------------------------------------------------
+def perform_like(page, probability: float = 0.8) -> bool:
+    """Detects and clicks the Like button if not already liked."""
+    if random.random() > probability:
+        return False
+    try:
+        time.sleep(random.uniform(1.5, 3.0))
+        like_selectors = [
+            "segmented-like-dislike-button-view-model like-button-view-model button",
+            "like-button-view-model button",
+            "ytd-segmented-like-dislike-button-renderer button:first-child",
+            "ytd-like-button-renderer button",
+            "button[aria-label*='like this video' i]",
+            "button[aria-label*='like' i][aria-label*='video' i]",
+            "ytd-reel-video-renderer[is-active] #like-button button",
+            "#like-button button",
+        ]
+        for sel in like_selectors:
+            btn = page.query_selector(sel)
+            if btn and btn.is_visible():
+                pressed = btn.get_attribute("aria-pressed")
+                if pressed and pressed.lower() == "true":
+                    return True  # Already liked
+                label = (btn.get_attribute("aria-label") or "").lower()
+                if "dislike" in label:
+                    continue
+                btn.scroll_into_view_if_needed()
+                btn.click()
+                time.sleep(random.uniform(0.5, 1.2))
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def perform_comment(page, comment_pool: list[str], probability: float = 0.5) -> str:
+    """Scrolls to the comment box, writes a natural comment, and submits it."""
+    if not comment_pool or random.random() > probability:
+        return ""
+    try:
+        # 1. Scroll down to trigger comments loading
+        page.evaluate("""() => {
+            const c = document.querySelector('#comments, ytd-comments');
+            if (c) c.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            else window.scrollBy(0, 500);
+        }""")
+        time.sleep(random.uniform(2.0, 3.5))
+
+        # Check for comments disabled notice
+        disabled = page.query_selector("ytd-comments #message:has-text('Comments are turned off'), ytd-message-renderer")
+        if disabled and disabled.is_visible():
+            return ""
+
+        # 2. Click placeholder to activate editor
+        placeholder_selectors = [
+            "#simplebox-placeholder",
+            "#placeholder-area",
+            "ytd-comment-simplebox-renderer #simplebox-placeholder",
+            "#simplebox-container",
+        ]
+        for sel in placeholder_selectors:
+            box = page.query_selector(sel)
+            if box and box.is_visible():
+                box.scroll_into_view_if_needed()
+                box.click()
+                break
+        time.sleep(random.uniform(1.0, 2.0))
+
+        # 3. Locate editable content area
+        editor_selectors = [
+            "div#contenteditable-root",
+            "#comment-dialog div#contenteditable-root",
+            "ytd-commentbox #contenteditable-root",
+            "div[contenteditable='true']#contenteditable-root",
+            "div#contenteditable-textarea",
+        ]
+        editor = None
+        for sel in editor_selectors:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                editor = el
+                break
+
+        if not editor:
+            return ""
+
+        chosen_comment = random.choice(comment_pool)
+        editor.click()
+        time.sleep(0.4)
+        # Type naturally with human-like key intervals
+        page.keyboard.type(chosen_comment, delay=random.randint(35, 85))
+        time.sleep(random.uniform(1.0, 2.0))
+
+        # 4. Click Submit / Comment button
+        submit_selectors = [
+            "#submit-button button",
+            "ytd-button-renderer#submit-button button",
+            "button[aria-label*='Comment' i]",
+            "ytd-commentbox #submit-button yt-button-shape button",
+            "#comment-dialog #submit-button button",
+        ]
+        for sel in submit_selectors:
+            sub = page.query_selector(sel)
+            if sub and sub.is_visible():
+                if sub.get_attribute("disabled") is not None:
+                    time.sleep(1.0)
+                sub.click()
+                time.sleep(random.uniform(1.5, 2.5))
+                return chosen_comment
+
+    except Exception:
+        pass
     return ""
 
 
-def write_xlsx(rows, path: Path, niche: str):
+def perform_subscribe(page, probability: float = 0.25) -> bool:
+    """Detects and clicks the Subscribe button if not already subscribed."""
+    if random.random() > probability:
+        return False
+    try:
+        time.sleep(random.uniform(1.5, 3.0))
+        sub_selectors = [
+            "ytd-watch-metadata #subscribe-button button",
+            "ytd-subscribe-button-renderer button",
+            "#subscribe-button yt-button-shape button",
+            "#subscribe-button button",
+            "ytd-reel-video-renderer[is-active] #subscribe-button button",
+            "button[aria-label*='Subscribe to' i]",
+            "button[aria-label*='Subscribe' i]",
+        ]
+        for sel in sub_selectors:
+            btn = page.query_selector(sel)
+            if btn and btn.is_visible():
+                btn_text = (btn.text_content() or "").strip().lower()
+                aria_label = (btn.get_attribute("aria-label") or "").lower()
+
+                # Check if already subscribed
+                if (
+                    "subscribed" in btn_text
+                    or "unsubscribe" in btn_text
+                    or "subscribed" in aria_label
+                    or "unsubscribe" in aria_label
+                ):
+                    return False
+
+                # Verify it is a subscribe action
+                if "subscribe" in btn_text or "subscribe" in aria_label:
+                    btn.scroll_into_view_if_needed()
+                    btn.click()
+                    time.sleep(random.uniform(0.8, 1.8))
+
+                    # Dismiss any membership / confirmation popup
+                    try:
+                        popup_close = page.query_selector(
+                            "tp-yt-paper-dialog button[aria-label*='Dismiss' i], ytd-popup-container button[aria-label*='Close' i]"
+                        )
+                        if popup_close and popup_close.is_visible():
+                            popup_close.click()
+                    except Exception:
+                        pass
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+# --------------------------------------------------------------------------
+# Video Candidate Discovery (Trending & Niche)
+# --------------------------------------------------------------------------
+def fetch_candidate_videos(page, cfg: dict, niche: str, seen: set) -> list[dict]:
+    """
+    Collects fresh trending and niche videos / Shorts to watch.
+    """
+    trending_cfg = cfg.get("trending", {})
+    trending_enabled = trending_cfg.get("enabled", True)
+    content_type = trending_cfg.get("content_type", "both").lower()  # "both", "videos", "shorts"
+    cands = []
+
+    # Source 1: YouTube Official Trending Feeds
+    if trending_enabled:
+        trending_urls = [
+            "https://www.youtube.com/feed/trending",
+            "https://www.youtube.com/feed/trending?bp=4gINGgt5dG1hX2NoYXJ0cw%3D%3D",  # Music
+            "https://www.youtube.com/feed/trending?bp=4gIcGhpnYW1pbmdfY29ycHVzX21vc3RfcG9wdWxhcg%3D%3D",  # Gaming
+        ]
+        t_url = random.choice(trending_urls)
+        print(f"[Feed] Browsing YouTube Trending ({t_url})...")
+        try:
+            page.goto(t_url, timeout=50000)
+            page.wait_for_load_state("domcontentloaded")
+            time.sleep(random.uniform(2.5, 4.0))
+            _dismiss_banners(page)
+            links = page.evaluate("""() => {
+                const els = Array.from(document.querySelectorAll('a#video-title, a#video-title-link, a[href*="/shorts/"], ytd-video-renderer a#thumbnail[href*="/watch"]'));
+                return els.map(e => ({
+                    href: e.href,
+                    title: (e.getAttribute('title') || e.textContent || '').trim()
+                })).filter(x => x.href && (x.href.includes('/watch') || x.href.includes('/shorts/')));
+            }""")
+            for l in links:
+                href = l["href"].split("&")[0]
+                if href and href not in seen:
+                    is_short = "/shorts/" in href
+                    if content_type == "shorts" and not is_short:
+                        continue
+                    if content_type == "videos" and is_short:
+                        continue
+                    cands.append(l)
+        except Exception as ex:
+            print(f"[Feed] Notice loading trending: {str(ex)[:60]}")
+
+    # Source 2: Niche Search (if configured)
+    if niche and not (niche.upper().startswith("PASTE")):
+        q = quote(niche)
+        search_urls = [
+            f"https://www.youtube.com/results?search_query={q}&sp=CAM%253D",  # Sorted by views
+            f"https://www.youtube.com/results?search_query={q}",
+        ]
+        s_url = random.choice(search_urls)
+        print(f"[Feed] Browsing Niche Search ({niche})...")
+        try:
+            page.goto(s_url, timeout=50000)
+            page.wait_for_load_state("domcontentloaded")
+            time.sleep(random.uniform(2.0, 3.5))
+            _dismiss_banners(page)
+            links = page.evaluate("""() => {
+                const els = Array.from(document.querySelectorAll('a#video-title-link, a#video-title, a[href*="/shorts/"]'));
+                return els.map(e => ({
+                    href: e.href,
+                    title: (e.getAttribute('title') || e.textContent || '').trim()
+                })).filter(x => x.href && (x.href.includes('/watch') || x.href.includes('/shorts/')));
+            }""")
+            for l in links:
+                href = l["href"].split("&")[0]
+                if href and href not in seen:
+                    is_short = "/shorts/" in href
+                    if content_type == "shorts" and not is_short:
+                        continue
+                    if content_type == "videos" and is_short:
+                        continue
+                    cands.append(l)
+        except Exception as ex:
+            print(f"[Feed] Notice loading niche search: {str(ex)[:60]}")
+
+    # Deduplicate & shuffle
+    unique = []
+    for c in cands:
+        h = c["href"].split("&")[0]
+        if h not in seen:
+            seen.add(h)
+            unique.append(c)
+    random.shuffle(unique)
+    print(f"[Feed] Found {len(unique)} candidate videos to watch ({content_type.upper()} mode).")
+    return unique
+
+
+# --------------------------------------------------------------------------
+# Excel & Logging
+# --------------------------------------------------------------------------
+def write_xlsx(rows: list, path: Path, niche: str):
+    """Writes styled multi-column Excel worksheet with complete engagement data."""
     from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.styles import Alignment, Font, PatternFill
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "Engagement worksheet"
-    ws.append(["Niche", niche, "", "", "", "", "Generated", datetime.now().strftime("%Y-%m-%d %H:%M")])
+    ws.title = "Engagement Worksheet"
+    ws.append(["Niche", niche or "Trending", "", "", "", "", "", "Generated", datetime.now().strftime("%Y-%m-%d %H:%M")])
     ws.append([])
-    headers = ["#", "Title", "Channel", "URL", "Views", "Length",
-               "Watched (local)", "Suggested action", "Your comment (write a real one)",
-               "Liked?", "Done?"]
+    headers = [
+        "#", "Account", "Title", "Channel", "URL", "Views", "Length",
+        "Watched (local)", "Suggested action", "Comment Posted",
+        "Liked?", "Subscribed?", "Done?",
+    ]
     ws.append(headers)
+
     fill = PatternFill("solid", fgColor="1F4E78")
     for c in ws[ws.max_row]:
         c.font = Font(bold=True, color="FFFFFF")
         c.fill = fill
-        c.alignment = Alignment(vertical="center")
+        c.alignment = Alignment(vertical="center", horizontal="center")
+
     for i, r in enumerate(rows, 1):
         ws.append([
-            i, r.get("title", ""), r.get("channel", ""), r.get("url", ""),
-            r.get("views", ""), fmt_len(r.get("duration")), r.get("watched_at", ""),
-            r.get("flag", ""), "", "", "",
+            i,
+            r.get("account", ""),
+            r.get("title", ""),
+            r.get("channel", ""),
+            r.get("url", ""),
+            r.get("views", ""),
+            fmt_len(r.get("duration")),
+            r.get("watched_at", ""),
+            r.get("flag", ""),
+            r.get("comment", ""),
+            "YES" if r.get("liked") else "NO",
+            "YES" if r.get("subscribed") else "NO",
+            "YES",
         ])
-    widths = {"A": 5, "B": 55, "C": 28, "D": 46, "E": 12, "F": 8,
-              "G": 20, "H": 40, "I": 44, "J": 9, "K": 8}
+
+    widths = {
+        "A": 5,
+        "B": 24,
+        "C": 48,
+        "D": 26,
+        "E": 44,
+        "F": 12,
+        "G": 10,
+        "H": 20,
+        "I": 32,
+        "J": 42,
+        "K": 10,
+        "L": 14,
+        "M": 8,
+    }
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A4"
     wb.save(path)
 
 
-def _run_search_loop(page, cfg, niche, seen: set, counter: dict, rows: list,
-                     xlsx_path: Path, csv_fh):
-    q = quote(niche)
-    page.goto("https://www.youtube.com/results?search_query=%s" % q, timeout=60000)
-    page.wait_for_load_state("domcontentloaded")
-    time.sleep(random.uniform(2, 4))
-    _dismiss_banners(page)
+# --------------------------------------------------------------------------
+# Main Engine Runner (callable by CLI or UI thread)
+# --------------------------------------------------------------------------
+def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=False, profile_dir=None, headless=False):
+    """
+    Core automation loop. Emits state callbacks if provided.
+    """
+    if cfg is None:
+        cfg = load_cfg()
 
-    try:
-        links = page.eval_on_selector_all(
-            "a#video-title-link, a#video-title, a[href*='/shorts/']",
-            """els => els.map(e => ({
-                 href: e.href,
-                 title: (e.getAttribute('title') || e.textContent || '').trim()
-               })).filter(x => x.href)""")
-    except Exception:
-        links = []
-
-    cands = []
-    for l in links:
-        href = l["href"].split("&")[0]
-        if not href or href in seen:
-            continue
-        cands.append(l)
-        seen.add(href)
-    random.shuffle(cands)
-
-    per = cfg["play_seconds_per_video"]
-    jit = cfg["play_jitter"]
-    for i, c in enumerate(cands, 1):
-        if stopped():
-            return
-        if cfg["max_videos"] and counter["n"] >= cfg["max_videos"]:
-            return
-        dur = max(15, int(random.uniform(per - jit, per + jit)))
-        print("[%d] %s  (~%ds)" % (i, (c["title"] or c["href"])[:60], dur))
-        try:
-            page.goto(c["href"], timeout=60000)
-            page.wait_for_load_state("domcontentloaded")
-            time.sleep(random.uniform(1.5, 3.5))
-            _dismiss_banners(page)
-            try:
-                btn = page.query_selector("button.ytp-large-play-button")
-                if btn and btn.is_visible():
-                    btn.click()
-            except Exception:
-                pass
-            # watch it, with light human-like activity
-            t0 = time.time()
-            while time.time() - t0 < dur and not stopped():
-                time.sleep(3)
-                try:
-                    page.mouse.move(random.randint(200, 1100), random.randint(150, 700), steps=8)
-                    if random.random() < 0.3:
-                        page.mouse.wheel(0, random.randint(50, 180))
-                except Exception:
-                    break
-            meta = _scrape_meta(page)
-            row = {
-                "title": (c["title"] or "")[:200],
-                "url": c["href"],
-                "channel": meta.get("channel", ""),
-                "views": meta.get("views", ""),
-                "duration": meta.get("duration", ""),
-                "watched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "flag": _flag(meta.get("views")),
-            }
-            rows.append(row)
-            counter["n"] += 1
-            try:
-                write_xlsx(rows, xlsx_path, niche)
-            except Exception as ex:
-                print("   (xlsx write failed:", str(ex)[:60], ")")
-            csv_fh.write('%s,%s,"%s"\n' % (
-                row["watched_at"], c["href"].replace('"', "'"),
-                (c["title"] or "")[:120].replace('"', "'"),
-            ))
-            csv_fh.flush()
-            print("     views=%s  len=%s  flag=%s" % (
-                meta.get("views", "?"), fmt_len(meta.get("duration")), row["flag"] or "-"))
-            time.sleep(random.uniform(2, 6))
-            if cfg["break_every"] and counter["n"] % cfg["break_every"] == 0:
-                b = random.uniform(*cfg["break_seconds"])
-                print("   ... taking a break (%.0f s) ..." % b)
-                time.sleep(b)
-        except Exception as e:
-            print("   skip (%s)" % str(e)[:80])
-    time.sleep(random.uniform(15, 40))
-
-
-def _dismiss_banners(page):
-    for sel in ("button[aria-label*='Accept all']",
-                "button[aria-label*='Accept the use']",
-                "tp-yt-paper-button#agree-button",
-                "ytd-button-renderer button#agree-button",
-                "button#accept-button"):
-        try:
-            b = page.query_selector(sel)
-            if b and b.is_visible():
-                b.click()
-                time.sleep(1)
-                return
-        except Exception:
-            pass
-
-
-def main():
-    cfg = load_cfg()
-    if len(sys.argv) > 2 and sys.argv[1] == "--niche":
-        cfg["niche"] = sys.argv[2].strip()
     niche = (cfg.get("niche") or "").strip()
-    if not niche or "PASTE" in niche.upper():
-        print("First set the 'niche' field in config.json (or pass --niche \"your niche\").")
-        sys.exit(1)
-
-    use_real_chrome = "--real-chrome" in sys.argv
-    profile_dir = None
-    for i, a in enumerate(sys.argv):
-        if a == "--profile-dir" and i + 1 < len(sys.argv):
-            profile_dir = sys.argv[i + 1]
-    headless = "--headless" in sys.argv
     dedicated = HERE / "browser_profile"
+
+    # Rotation settings
+    rot_cfg = cfg.get("account_rotation", {})
+    rotation_enabled = rot_cfg.get("enabled", True)
+    rot_mins = rot_cfg.get("rotate_minutes", [15, 25])
+
+    # Engagement settings
+    eng_cfg = cfg.get("engagement", {})
+    auto_like = eng_cfg.get("auto_like", True)
+    like_prob = float(eng_cfg.get("like_probability", 0.8))
+    auto_comment = eng_cfg.get("auto_comment", True)
+    comment_prob = float(eng_cfg.get("comment_probability", 0.5))
+    auto_sub = eng_cfg.get("auto_subscribe", True)
+    sub_prob = float(eng_cfg.get("subscribe_probability", 0.25))
+    comment_pool = eng_cfg.get("comment_pool", DEFAULT_COMMENTS)
 
     from playwright.sync_api import sync_playwright
 
-    print("=" * 62)
-    print("Auto-Player  (single account, watch-only, builds an Excel worksheet)")
-    print("  niche    :", niche)
-    print("  mode     :", "real Chrome profile" if use_real_chrome
-          else "dedicated profile (log into ONE account once, optional)")
-    print("  per video: %s ± %s s   break: every %d videos" % (
-        cfg["play_seconds_per_video"], cfg["play_jitter"], cfg["break_every"]))
-    print("  NO auto-like / NO auto-comment — you do those yourself.")
-    print("  stop     : Ctrl+C  |  create stop.txt  |  close the window")
-    print("=" * 62)
+    def emit(event_type, **data):
+        if status_callback:
+            try:
+                status_callback({"type": event_type, "timestamp": datetime.now().isoformat(), **data})
+            except Exception:
+                pass
+
+    print("=" * 68)
+    print("Auto-Player: Multi-Account Rotation, Auto-Like, Comment & Subscribe")
+    print(f"  Niche              : {niche or '(Global Trending)'}")
+    print(f"  Browser Mode       : {'Real Chrome profile' if use_real_chrome else 'Dedicated profile (browser_profile/)'}")
+    print(f"  Account Rotation   : {'Enabled (' + str(rot_mins[0]) + ' to ' + str(rot_mins[1]) + ' mins)' if rotation_enabled else 'Disabled (Single account)'}")
+    print(f"  Auto-Like          : {'Enabled (prob: ' + str(like_prob) + ')' if auto_like else 'Disabled'}")
+    print(f"  Auto-Comment       : {'Enabled (prob: ' + str(comment_prob) + ')' if auto_comment else 'Disabled'}")
+    print(f"  Auto-Subscribe     : {'Enabled (prob: ' + str(sub_prob) + ')' if auto_sub else 'Disabled'}")
+    print(f"  Watch Duration     : {cfg['play_seconds_per_video']} ± {cfg['play_jitter']} seconds")
+    print(f"  Break Frequency    : Every {cfg['break_every']} videos ({cfg['break_seconds'][0]}-{cfg['break_seconds'][1]}s)")
+    print(f"  Stop triggers      : Ctrl+C  |  create stop.txt  |  close browser")
+    print("=" * 68)
+
     if STOP_FILE.exists():
         STOP_FILE.unlink()
 
@@ -342,54 +778,244 @@ def main():
     new_log = not log.exists()
     fh = open(log, "a", encoding="utf-8", newline="")
     if new_log:
-        fh.write("time,video_url,title\n")
+        fh.write("time,account,video_url,liked,subscribed,comment,title\n")
 
     rows = []
-    watched = 0
+    watched_total = 0
+    likes_total = 0
+    comments_total = 0
+    subs_total = 0
+    rotations_total = 0
+
+    emit("started", niche=niche, xlsx_path=str(xlsx_path))
+
     try:
         with sync_playwright() as p:
             if use_real_chrome:
                 pdir = profile_dir or real_chrome_profile_dir()
                 if not pdir:
                     print("Could not detect your Chrome profile. Pass: --profile-dir \"/path/to/Chrome/User Data\"")
-                    sys.exit(1)
-                print("Using real Chrome profile:", pdir, "(close Chrome first)")
+                    emit("error", message="Chrome profile not detected")
+                    return
+                print("Using real Chrome profile:", pdir, "(close open Chrome first)")
                 launched = p.chromium.launch(
-                    executable_path=_chrome_exe(), headless=False,
-                    args=["--user-data-dir=%s" % pdir, "--profile-directory=Default"])
+                    executable_path=_chrome_exe(),
+                    headless=False,
+                    args=["--user-data-dir=%s" % pdir, "--profile-directory=Default"],
+                )
                 ctx = launched.new_context(viewport=None, locale="en-US")
             else:
                 dedicated.mkdir(exist_ok=True)
                 ctx = p.chromium.launch_persistent_context(
-                    str(dedicated), headless=headless,
-                    args=["--start-maximized"], viewport=None, locale="en-US")
+                    str(dedicated),
+                    headless=headless,
+                    args=["--start-maximized"],
+                    viewport=None,
+                    locale="en-US",
+                )
 
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto("https://www.youtube.com", timeout=60000)
 
             if not use_real_chrome and not headless:
+                print("\nBrowser is open. If this is your first run, log into your Google Account.")
+                print("Once logged in with your accounts, press ENTER to begin...")
                 try:
-                    print("Browser open. Optionally log into ONE account now.")
-                    print("Press Enter when ready to start watching...")
                     input()
                 except EOFError:
-                    time.sleep(20)
+                    time.sleep(15)
 
-            counter = {"n": 0}
+            # Account roster resolution
+            configured_accounts = rot_cfg.get("accounts", [])
+            if configured_accounts and len(configured_accounts) > 0:
+                account_list = [{"index": idx, "name": name, "handle": ""} for idx, name in enumerate(configured_accounts)]
+            else:
+                account_list = discover_available_accounts(page)
+
+            if not account_list:
+                account_list = [{"index": 0, "name": "Active Account", "handle": ""}]
+
+            emit("accounts_discovered", accounts=account_list)
+
+            current_account_idx = 0
+            current_account_name = switch_to_account(page, account_list[0]["index"], account_list[0]["name"])
+
+            # Setup rotation interval (15 to 25 mins)
+            min_sec = rot_mins[0] * 60
+            max_sec = max(rot_mins[0], rot_mins[1]) * 60
+            current_rotation_duration = random.uniform(min_sec, max_sec)
+            account_start_time = time.time()
+
+            emit("account_changed", account=current_account_name, index=0, duration=current_rotation_duration)
+            print(f"[Timer] Account '{current_account_name}' active. Scheduled rotation in {current_rotation_duration / 60:.1f} minutes.\n")
+
             seen = set()
+            counter = {"n": 0}
+
             while not stopped():
-                try:
-                    if page.is_closed():
-                        raise RuntimeError("browser window was closed")
-                    _run_search_loop(page, cfg, niche, seen, counter, rows,
-                                     xlsx_path, fh)
-                except Exception as e:
-                    print("Session ended (%s)." % str(e)[:120])
-                    break
+                if page.is_closed():
+                    raise RuntimeError("Browser window was closed by user.")
+
+                # Fetch fresh candidate videos
+                candidates = fetch_candidate_videos(page, cfg, niche, seen)
+                if not candidates:
+                    print("[Feed] No new videos found. Waiting 20 seconds before retry...")
+                    emit("status", status="Waiting for new video candidates...")
+                    time.sleep(20)
+                    continue
+
+                for i, c in enumerate(candidates, 1):
+                    if stopped():
+                        break
+                    if cfg["max_videos"] and counter["n"] >= cfg["max_videos"]:
+                        break
+
+                    # Check Account Rotation Timer
+                    elapsed = time.time() - account_start_time
+                    if rotation_enabled and len(account_list) > 1 and elapsed >= current_rotation_duration:
+                        print("\n" + "#" * 65)
+                        print(f"[Account Rotation] {elapsed / 60:.1f} minutes completed on account: '{current_account_name}'.")
+                        print("[Account Rotation] Rotating to next YouTube account in profile...")
+                        print("#" * 65)
+
+                        rotations_total += 1
+                        current_account_idx = (current_account_idx + 1) % len(account_list)
+                        next_acc = account_list[current_account_idx]
+
+                        emit("account_rotating", current=current_account_name, next=next_acc["name"])
+                        time.sleep(random.uniform(5.0, 10.0))
+                        current_account_name = switch_to_account(page, next_acc["index"], next_acc["name"])
+                        account_start_time = time.time()
+                        current_rotation_duration = random.uniform(min_sec, max_sec)
+
+                        emit("account_changed", account=current_account_name, index=current_account_idx, duration=current_rotation_duration)
+                        print(f"[Timer] Account '{current_account_name}' active. Scheduled rotation in {current_rotation_duration / 60:.1f} minutes.\n")
+                        break
+
+                    per = cfg["play_seconds_per_video"]
+                    jit = cfg["play_jitter"]
+                    dur = max(15, int(random.uniform(per - jit, per + jit)))
+                    video_title = (c.get("title") or c.get("href") or "Video")[:65]
+
+                    print(f"\n▶ [{counter['n'] + 1}] Watching on [{current_account_name}]: {video_title} (~{dur}s)")
+                    emit("video_start", title=video_title, url=c["href"], account=current_account_name, duration=dur)
+
+                    try:
+                        page.goto(c["href"], timeout=60000)
+                        page.wait_for_load_state("domcontentloaded")
+                        time.sleep(random.uniform(1.5, 3.5))
+                        _dismiss_banners(page)
+
+                        # Click Play if needed
+                        try:
+                            btn = page.query_selector("button.ytp-large-play-button")
+                            if btn and btn.is_visible():
+                                btn.click()
+                        except Exception:
+                            pass
+
+                        # Watch loop with human-like mouse movement and micro-scrolls
+                        t0 = time.time()
+                        liked_this_video = False
+                        comment_posted = ""
+                        subscribed_this_channel = False
+
+                        while time.time() - t0 < dur and not stopped():
+                            time.sleep(3)
+                            try:
+                                page.mouse.move(random.randint(200, 1000), random.randint(150, 650), steps=6)
+                                if random.random() < 0.25:
+                                    page.mouse.wheel(0, random.randint(40, 160))
+                            except Exception:
+                                break
+
+                            # Engage: Like halfway through video
+                            if not liked_this_video and auto_like and (time.time() - t0 >= dur * 0.35):
+                                if perform_like(page, like_prob):
+                                    liked_this_video = True
+                                    likes_total += 1
+                                    print(f"     ♥ Liked video via [{current_account_name}]")
+                                    emit("action", action="liked", account=current_account_name, title=video_title)
+
+                            # Engage: Comment around 55%
+                            if not comment_posted and auto_comment and (time.time() - t0 >= dur * 0.55):
+                                comment_posted = perform_comment(page, comment_pool, comment_prob)
+                                if comment_posted:
+                                    comments_total += 1
+                                    print(f"     💬 Commented via [{current_account_name}]: \"{comment_posted[:50]}...\"")
+                                    emit("action", action="commented", account=current_account_name, comment=comment_posted, title=video_title)
+
+                            # Engage: Subscribe around 75%
+                            if not subscribed_this_channel and auto_sub and (time.time() - t0 >= dur * 0.75):
+                                if perform_subscribe(page, sub_prob):
+                                    subscribed_this_channel = True
+                                    subs_total += 1
+                                    print(f"     🔔 Subscribed to creator via [{current_account_name}]")
+                                    emit("action", action="subscribed", account=current_account_name, title=video_title)
+
+                        # Collect metadata
+                        meta = _scrape_meta(page)
+                        row = {
+                            "account": current_account_name,
+                            "title": (c.get("title") or "")[:200],
+                            "url": c["href"],
+                            "channel": meta.get("channel", ""),
+                            "views": meta.get("views", ""),
+                            "duration": meta.get("duration", ""),
+                            "watched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "flag": _flag(meta.get("views")),
+                            "liked": liked_this_video,
+                            "subscribed": subscribed_this_channel,
+                            "comment": comment_posted,
+                        }
+                        rows.append(row)
+                        counter["n"] += 1
+                        watched_total = counter["n"]
+
+                        # Save progress to Excel and CSV
+                        try:
+                            write_xlsx(rows, xlsx_path, niche)
+                        except Exception as ex:
+                            print(f"   (xlsx update warning: {str(ex)[:60]})")
+
+                        csv_fh_line = '%s,"%s","%s","%s","%s","%s","%s"\n' % (
+                            row["watched_at"],
+                            row["account"].replace('"', "'"),
+                            c["href"].replace('"', "'"),
+                            "YES" if row["liked"] else "NO",
+                            "YES" if row["subscribed"] else "NO",
+                            row["comment"].replace('"', "'"),
+                            (c.get("title") or "")[:120].replace('"', "'"),
+                        )
+                        fh.write(csv_fh_line)
+                        fh.flush()
+
+                        print(f"     ✓ Logged | Views: {meta.get('views', '?')} | Length: {fmt_len(meta.get('duration'))} | Liked: {'YES' if liked_this_video else 'NO'} | Subscribed: {'YES' if subscribed_this_channel else 'NO'}")
+
+                        emit("video_complete", video=row, stats={
+                            "watched": watched_total,
+                            "likes": likes_total,
+                            "comments": comments_total,
+                            "subs": subs_total,
+                            "rotations": rotations_total,
+                        })
+
+                        time.sleep(random.uniform(2.5, 5.5))
+
+                        # Scheduled breaks
+                        if cfg["break_every"] and counter["n"] % cfg["break_every"] == 0:
+                            b = random.uniform(*cfg["break_seconds"])
+                            print(f"   ☕ Taking a natural break ({b:.0f}s)...")
+                            emit("break", duration=b)
+                            time.sleep(b)
+
+                    except Exception as e:
+                        print(f"   [Skip] Error during video playback: {str(e)[:80]}")
+
                 if cfg["max_videos"] and counter["n"] >= cfg["max_videos"]:
-                    print("Reached max_videos (%d). Stopping." % cfg["max_videos"])
+                    print(f"\nReached max_videos target ({cfg['max_videos']}). Stopping.")
                     break
-            watched = counter["n"]
+
             try:
                 write_xlsx(rows, xlsx_path, niche)
             except Exception:
@@ -398,19 +1024,76 @@ def main():
                 ctx.close()
             except Exception:
                 pass
+
     except KeyboardInterrupt:
         print("\nStopped by user (Ctrl+C).")
+    except Exception as ex:
+        print(f"\nSession finished or stopped: {ex}")
+        emit("error", message=str(ex))
 
     fh.close()
     try:
         write_xlsx(rows, xlsx_path, niche)
     except Exception:
         pass
-    print("\nDone. %d videos." % watched)
-    print("  Excel worksheet : %s" % xlsx_path)
-    print("  CSV log         : %s" % log)
+
+    emit("finished", stats={
+        "watched": watched_total,
+        "likes": likes_total,
+        "comments": comments_total,
+        "subs": subs_total,
+        "rotations": rotations_total,
+    })
+
+    print("\n" + "=" * 50)
+    print(f"Session Finished. Total videos watched: {watched_total}")
+    print(f"  Excel Worksheet : {xlsx_path}")
+    print(f"  CSV History Log : {log}")
+    print("=" * 50)
     if STOP_FILE.exists():
         STOP_FILE.unlink()
+
+
+def main():
+    cfg = load_cfg()
+
+    # CLI Arguments Parsing
+    if len(sys.argv) > 2 and "--niche" in sys.argv:
+        idx = sys.argv.index("--niche")
+        if idx + 1 < len(sys.argv):
+            cfg["niche"] = sys.argv[idx + 1].strip()
+
+    use_real_chrome = "--real-chrome" in sys.argv
+    profile_dir = None
+    for i, a in enumerate(sys.argv):
+        if a == "--profile-dir" and i + 1 < len(sys.argv):
+            profile_dir = sys.argv[i + 1]
+    headless = "--headless" in sys.argv
+
+    # Override flags
+    if "--no-rotate" in sys.argv:
+        cfg["account_rotation"]["enabled"] = False
+    if "--rotate-min" in sys.argv:
+        cfg["account_rotation"]["rotate_minutes"][0] = int(sys.argv[sys.argv.index("--rotate-min") + 1])
+    if "--rotate-max" in sys.argv:
+        cfg["account_rotation"]["rotate_minutes"][1] = int(sys.argv[sys.argv.index("--rotate-max") + 1])
+    if "--no-like" in sys.argv:
+        cfg["engagement"]["auto_like"] = False
+    if "--no-comment" in sys.argv:
+        cfg["engagement"]["auto_comment"] = False
+    if "--no-sub" in sys.argv:
+        cfg["engagement"]["auto_subscribe"] = False
+    if "--shorts-only" in sys.argv:
+        cfg["trending"]["content_type"] = "shorts"
+    elif "--videos-only" in sys.argv:
+        cfg["trending"]["content_type"] = "videos"
+
+    run_player_engine(
+        cfg=cfg,
+        use_real_chrome=use_real_chrome,
+        profile_dir=profile_dir,
+        headless=headless,
+    )
 
 
 if __name__ == "__main__":
