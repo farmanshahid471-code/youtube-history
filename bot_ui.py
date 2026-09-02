@@ -66,6 +66,7 @@ def add_log(message: str, category: str = "info"):
 def engine_callback(event: dict):
     etype = event.get("type")
     with STATE_LOCK:
+        STATE["last_heartbeat"] = time.time()
         if etype == "status":
             STATE["status"] = event.get("status", STATE["status"])
             add_log(event.get("status", ""), "info")
@@ -158,6 +159,9 @@ def engine_callback(event: dict):
 
 def bot_worker(cfg: dict, use_real_chrome: bool, profile_dir: str):
     import auto_player
+    # Heartbeat so the UI can tell if the engine is alive (and recover the button
+    # if it ever stalls). Updated via engine_callback; checked by _bot_watchdog.
+    STATE["last_heartbeat"] = time.time()
     try:
         auto_player.run_player_engine(
             cfg=cfg,
@@ -174,6 +178,31 @@ def bot_worker(cfg: dict, use_real_chrome: bool, profile_dir: str):
     finally:
         with STATE_LOCK:
             STATE["running"] = False
+
+
+def _bot_heartbeat_watchdog():
+    """
+    Runs in the background: if the bot state says 'running' but no engine event
+    has been seen for a long time (e.g. the browser launch hung), force-release
+    the 'running' flag so the START button stops being stuck. It also adds a log
+    line explaining what likely went wrong.
+    """
+    while True:
+        time.sleep(10)
+        with STATE_LOCK:
+            running = STATE["running"]
+            last = STATE.get("last_heartbeat", 0)
+            status = STATE.get("status", "")
+        if not running:
+            continue
+        # Allow up to 90s without any heartbeat before recovering. The very first
+        # browser launch can take a while (starting Chromium), so be generous but
+        # not so long that the button stays dead for many minutes.
+        if time.time() - last > 90:
+            with STATE_LOCK:
+                STATE["running"] = False
+                STATE["status"] = "Automation stalled (browser did not respond) - press START to try again"
+            add_log("Bot stalled after launch (no heartbeat). Press START BOT again.", "error")
 
 
 # --------------------------------------------------------------------------
@@ -1005,6 +1034,9 @@ def run_ui_server(port: int = 5000):
     print(f"  Access local dashboard : http://localhost:{port}")
     print(f"  Listening on host      : {host}:{port}")
     print("=" * 60)
+    # Start the stalled-engine watchdog so the START button can never be permanently stuck.
+    watchdog = threading.Thread(target=_bot_heartbeat_watchdog, daemon=True)
+    watchdog.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

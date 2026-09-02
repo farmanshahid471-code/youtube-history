@@ -1,7 +1,7 @@
 {
   "niche": "tech gadgets under $50",
   "api_key": "",
-  "use_real_chrome": true,
+  "use_real_chrome": false,
   "connect_cdp": false,
   "cdp_url": "http://localhost:9222",
   "chrome_profile_dir": "Profile 5",
