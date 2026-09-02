@@ -122,12 +122,12 @@ echo   To stop, click STOP BOT in the dashboard, or press Ctrl+C here.
 echo ======================================================================
 echo.
 
-rem Open the dashboard in the SAME Chrome profile the bot will drive.
-rem We launch Chrome (Profile 5) with the debug port enabled and point it at the
-rem dashboard, so the bot can ATTACH to that window (rather than trying to open a
-rem second copy of the profile, which locks and hangs). This runs non-interactively.
-echo Opening your Chrome profile (see config.json "chrome_profile_dir") with the debug port...
-start "" /b cmd /c "timeout /t 3 /nobreak >nul & .venv\Scripts\python.exe launch_chrome_debug.py --url http://localhost:5000 --auto"
+rem Open the dashboard in your DEFAULT browser (NOT Chrome Profile 5).
+rem IMPORTANT: do NOT open the dashboard in Chrome Profile 5 - that locks the
+rem profile so the bot cannot use it. Opening it in the default browser (Edge,
+rem Opera, Chrome-other-profile, etc.) keeps Profile 5 free for the bot to launch.
+echo Opening the dashboard in your default browser (edge/opera/chrome)...
+start "" /b cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:5000"
 
 rem Run the UI server in the foreground of this window
 ".venv\Scripts\python.exe" bot_ui.py %*

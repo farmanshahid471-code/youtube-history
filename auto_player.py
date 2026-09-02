@@ -121,6 +121,18 @@ def chrome_is_running() -> bool:
         return False
 
 
+def close_chrome():
+    """Force-close any running Chrome/Chromium so Playwright can launch the profile."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True, timeout=20)
+        else:
+            subprocess.run(["pkill", "-f", "chrome"], capture_output=True, timeout=20)
+        time.sleep(3)
+    except Exception:
+        pass
+
+
 def stopped() -> bool:
     return STOP_FILE.exists()
 
@@ -908,54 +920,36 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 profile_full = os.path.join(pdir, profile_name)
                 print("Using real Chrome profile:", pdir, "| profile:", profile_name)
                 print("  profile folder:", profile_full)
-                emit("status", status="Checking Chrome... (profile '%s')" % profile_name)
+                emit("status", status="Preparing Chrome profile '%s'..." % profile_name)
 
-                # If Chrome is ALREADY running, the profile is locked and we CANNOT launch a
-                # second instance on it - that is what caused the endless 'stuck' hang.  In that
-                # case the right move is to ATTACH to the running Chrome via CDP (if the debug
-                # port is up) or to tell the user clearly instead of hanging.
+                # Chrome locks a profile while it is running, so Playwright CANNOT launch a
+                # second instance on it (this was the endless 'stuck' hang). Close any running
+                # Chrome first, then launch profile '%s' directly. Playwright connects over a
+                # pipe, so Chrome 136+'s "remote debugging requires a non-default data dir"
+                # restriction does NOT apply - no debug port needed.
                 if chrome_is_running():
-                    print("Chrome is already running. Attempting to attach via CDP instead of relaunching...")
-                    emit("status", status="Chrome already running -> attaching to it via CDP...")
-                    try:
-                        browser = p.chromium.connect_over_cdp(cdp_url)
-                    except Exception as e:
-                        print("Could not attach to running Chrome via CDP (%s)." % e)
-                        emit("error", message=(
-                            "Chrome is open using profile '%s', so the bot cannot open it again.\n"
-                            "Option 1 (recommended): fully close Chrome, then press START - the bot opens profile '%s' itself.\n"
-                            "Option 2 (keep this Chrome open): run launch-chrome-debug.bat once, keep that Chrome open, then turn ON 'Attach to running Chrome (CDP)' and press START.\n"
-                            "Details: %s" % (profile_name, profile_name, str(e)[:120])
-                        ))
-                        return
-                    ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                    emit("status", status="Attached to your running Chrome. Locating YouTube...")
-                    print("Attached to running Chrome. Navigating to YouTube...")
-                    page.goto("https://www.youtube.com", timeout=60000)
-                else:
-                    # Chrome is NOT running: cleanly launch the real profile.
-                    print("Chrome not running. Launching profile '%s'..." % profile_name)
-                    emit("status", status="Opening your real Chrome profile '%s'..." % profile_name)
-                    try:
-                        ctx = p.chromium.launch_persistent_context(
-                            pdir,
-                            executable_path=_chrome_exe(),
-                            headless=False,
-                            args=["--profile-directory=%s" % profile_name],
-                            viewport=None,
-                            locale="en-US",
-                            timeout=45000,
-                        )
-                    except Exception as e:
-                        msg = str(e)
-                        if "in use" in msg.lower() or "locked" in msg.lower() or "user data directory" in msg.lower() or "process" in msg.lower():
-                            emit("error", message="Chrome could not take over profile '%s'. Close all Chrome windows and press START again." % profile_name)
-                        else:
-                            emit("error", message="Failed to launch Chrome: %s" % msg[:200])
-                        return
-                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                    page.goto("https://www.youtube.com", timeout=60000)
+                    print("Chrome is running. Closing it so the bot can use profile '%s'... (your login is saved)" % profile_name)
+                    emit("status", status="Closing Chrome so the bot can use profile '%s'..." % profile_name)
+                    close_chrome()
+
+                print("Launching profile '%s'..." % profile_name)
+                emit("status", status="Opening your real Chrome profile '%s'..." % profile_name)
+                try:
+                    ctx = p.chromium.launch_persistent_context(
+                        pdir,
+                        executable_path=_chrome_exe(),
+                        headless=False,
+                        args=["--profile-directory=%s" % profile_name],
+                        viewport=None,
+                        locale="en-US",
+                        timeout=60000,
+                    )
+                except Exception as e:
+                    msg = str(e)
+                    emit("error", message="Could not open Chrome profile '%s': %s" % (profile_name, msg[:220]))
+                    return
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto("https://www.youtube.com", timeout=60000)
 
             else:
                 dedicated.mkdir(exist_ok=True)
