@@ -894,13 +894,15 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                 profile_name = cfg.get("chrome_profile_dir", "Default")
                 profile_full = os.path.join(pdir, profile_name)
                 print("Using real Chrome profile:", pdir, "| profile:", profile_name)
-                emit("status", status="Opening your Chrome profile '%s'... Make sure Chrome is fully closed." % profile_name)
-                # IMPORTANT: Playwright cannot reuse a Chrome profile while that same Chrome
-                # is open - the profile dir is locked, so the launch hangs. If Chrome is open,
-                # either close it, OR use the CDP "attach to running Chrome" mode instead.
+                emit("status", status="Opening your real Chrome profile '%s'... (Chrome must be fully closed)" % profile_name)
+                # IMPORTANT: user_data_dir must be the "User Data" ROOT, and --profile-directory
+                # selects which profile inside it. Passing the profile subfolder as user-data-dir
+                # (plus --profile-directory) makes Chrome look for a NESTED profile folder and
+                # actually creates a fresh empty profile - which is why the bot "did nothing".
+                # Playwright also CANNOT reuse a profile while that same Chrome is open (locked).
                 try:
                     ctx = p.chromium.launch_persistent_context(
-                        profile_full,
+                        pdir,
                         executable_path=_chrome_exe(),
                         headless=False,
                         args=["--profile-directory=%s" % profile_name],

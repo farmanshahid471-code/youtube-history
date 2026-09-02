@@ -154,16 +154,48 @@ def main():
     print("  ABOUT TO LAUNCH CHROME WITH PROFILE: %s" % profile.upper())
     print("  (folder: %s)" % profile_full)
     print("=" * 70)
-    print("  BEFORE CONTINUING: fully QUIT Chrome.")
-    print("  - Close every Chrome window.")
-    print("  - If Chrome is still running in the background/system tray,")
-    print("    it will ignore the debug port and the bot cannot connect.")
-    print("  Task Manager: end any 'Google Chrome' / 'chrome.exe' processes.")
+    print("  IMPORTANT: for the debug port to work, Chrome must be FULLY closed.")
+    print("  If Chrome is still running it will ignore the port and the bot can't connect.")
     print("=" * 70)
+
+    # Detect whether Chrome (or Chromium) is already running and offer to close it,
+    # otherwise the --remote-debugging-port is silently ignored (the exact failure above).
+    import ctypes
+    import platform
+    running_chrome = False
     try:
-        reply = input("  Type 'yes' after Chrome is fully closed (or press Enter to continue now): ").strip().lower()
-    except EOFError:
-        reply = "yes"  # double-clicked / no stdin: just proceed
+        if platform.system() == "Windows":
+            out = subprocess.run(["tasklist"], capture_output=True, text=True).stdout
+            running_chrome = "chrome.exe" in out.lower()
+        else:
+            out = subprocess.run(["pgrep", "-l", "chrome"], capture_output=True, text=True).stdout
+            running_chrome = "chrome" in out.lower()
+    except Exception:
+        pass
+
+    if running_chrome:
+        print("  >> Chrome appears to be RUNNING already.")
+        print("     It must be closed for the debug port to bind. The helper can close it for you,")
+        print("     but that will also close any tabs you have open (your login is saved).")
+        try:
+            force = input("  Close all Chrome now? Type 'yes' to force-close (or press Enter to abort): ").strip().lower()
+        except EOFError:
+            force = ""
+        if force == "yes":
+            print("  Closing Chrome so the debug port can bind...")
+            try:
+                if platform.system() == "Windows":
+                    subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True)
+                else:
+                    subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
+                time.sleep(3)
+            except Exception as e:
+                print("  [WARN] Could not auto-close Chrome:", e)
+        else:
+            print("  [ABORTED] Chrome is running. Please close it manually and re-run this helper.")
+            sys.exit(1)
+    else:
+        print("  Chrome is not running. Proceeding...")
 
     args = [
         exe,
