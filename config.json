@@ -4,6 +4,7 @@
   "use_real_chrome": false,
   "connect_cdp": false,
   "cdp_url": "http://localhost:9222",
+  "chrome_profile_dir": "Default",
   "top_channels": 8,
   "videos_per_channel": 15,
   "top_comments_for": 12,

@@ -49,6 +49,7 @@ DEFAULTS = {
     "use_real_chrome": False,
     "connect_cdp": False,
     "cdp_url": "http://localhost:9222",
+    "chrome_profile_dir": "Default",
     "output_dir": "output",
     "play_seconds_per_video": 40,
     "play_jitter": 12,
@@ -874,7 +875,7 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                     browser = p.chromium.connect_over_cdp(cdp_url)
                 except Exception as e:
                     print("Could not connect to Chrome. Launch it with --remote-debugging-port=9222 (see README).")
-                    emit("error", message="Cannot attach to Chrome. Start it with --remote-debugging-port=9222 (use launch-chrome-debug.bat). Details: %s" % str(e)[:120])
+                    emit("error", message="Cannot attach to Chrome. Start it with launch-chrome-debug.bat (which launches your Chrome profile on port 9222). Details: %s" % str(e)[:120])
                     return
                 # Use the default context that already holds your logged-in session.
                 ctx = browser.contexts[0] if browser.contexts else browser.new_context()
@@ -889,17 +890,20 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
                     print("Could not detect your Chrome profile. Pass: --profile-dir \"/path/to/Chrome/User Data\"")
                     emit("error", message="Chrome profile not detected")
                     return
-                print("Using real Chrome profile:", pdir)
-                emit("status", status="Opening your Chrome profile... Make sure Chrome is fully closed.")
+                # Which profile INSIDE the User Data folder to use (Default, Profile 5, ...)
+                profile_name = cfg.get("chrome_profile_dir", "Default")
+                profile_full = os.path.join(pdir, profile_name)
+                print("Using real Chrome profile:", pdir, "| profile:", profile_name)
+                emit("status", status="Opening your Chrome profile '%s'... Make sure Chrome is fully closed." % profile_name)
                 # IMPORTANT: Playwright cannot reuse a Chrome profile while that same Chrome
                 # is open - the profile dir is locked, so the launch hangs. If Chrome is open,
                 # either close it, OR use the CDP "attach to running Chrome" mode instead.
                 try:
                     ctx = p.chromium.launch_persistent_context(
-                        pdir,
+                        profile_full,
                         executable_path=_chrome_exe(),
                         headless=False,
-                        args=["--profile-directory=Default"],
+                        args=["--profile-directory=%s" % profile_name],
                         viewport=None,
                         locale="en-US",
                         timeout=60000,
@@ -1179,9 +1183,12 @@ def main():
     if "--cdp" in sys.argv:
         cfg["connect_cdp"] = True
         use_real_chrome = True  # attaching to a real Chrome implies real profile
+    profile_dir = None
     for i, a in enumerate(sys.argv):
         if a == "--profile-dir" and i + 1 < len(sys.argv):
             profile_dir = sys.argv[i + 1]
+        if a == "--profile" and i + 1 < len(sys.argv):
+            cfg["chrome_profile_dir"] = sys.argv[i + 1].strip()
         if a == "--cdp-url" and i + 1 < len(sys.argv):
             cfg["cdp_url"] = sys.argv[i + 1]
     headless = "--headless" in sys.argv

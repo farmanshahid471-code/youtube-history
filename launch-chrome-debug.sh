@@ -5,6 +5,7 @@ if command -v python3 >/dev/null 2>&1; then
 else
   PY=python
 fi
+# Pass through any --profile / --user-data-dir / --port args
 "$PY" launch_chrome_debug.py "$@"
 echo
 echo "Done. Keep this Chrome window open, then press START BOT in the dashboard"

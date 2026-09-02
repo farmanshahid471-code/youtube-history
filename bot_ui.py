@@ -407,6 +407,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 </span>
                 <input id="cfgRealChrome" type="checkbox" class="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 bg-slate-800 border-slate-700">
               </div>
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-0.5">Chrome profile to use (e.g. Default, Profile 5)</label>
+                <input id="cfgProfileDir" type="text" value="Default" placeholder="Default" class="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-[11px]">
+              </div>
               <p class="text-[11px] text-slate-500 leading-relaxed">
                 <strong class="text-slate-400">OFF</strong> = the bot opens a fresh, dedicated profile
                 (<code>browser_profile/</code>) and you log into Google once in that window.<br>
@@ -592,6 +596,7 @@ HTML_PAGE = """<!DOCTYPE html>
         document.getElementById('cfgFeedSource').value = (cfg.trending && cfg.trending.source) || 'trending_and_niche';
         document.getElementById('cfgRealChrome').checked = !!cfg.use_real_chrome;
         document.getElementById('cfgConnectCdp').checked = !!cfg.connect_cdp;
+        document.getElementById('cfgProfileDir').value = cfg.chrome_profile_dir || 'Default';
 
         document.getElementById('cfgWatchSec').value = cfg.play_seconds_per_video || 40;
         document.getElementById('cfgWatchJitter').value = cfg.play_jitter ?? 12;
@@ -637,6 +642,7 @@ HTML_PAGE = """<!DOCTYPE html>
         use_real_chrome: document.getElementById('cfgRealChrome').checked,
         connect_cdp: document.getElementById('cfgConnectCdp').checked,
         cdp_url: configCache.cdp_url || 'http://localhost:9222',
+        chrome_profile_dir: document.getElementById('cfgProfileDir').value.trim() || 'Default',
         play_seconds_per_video: parseInt(document.getElementById('cfgWatchSec').value) || 40,
         play_jitter: parseInt(document.getElementById('cfgWatchJitter').value) || 12,
         break_every: parseInt(document.getElementById('cfgBreakEvery').value) || 8,

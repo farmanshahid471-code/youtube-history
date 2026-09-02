@@ -28,9 +28,12 @@ There are three ways the bot gets a browser. Pick in the dashboard's **Browser P
 2. **ON — your real Chrome session (relaunch):** the bot opens your real Chrome profile (already signed in, with all your channel accounts). ⚠️ **You must fully close Chrome before starting**, because Playwright cannot reuse a profile while that same Chrome is running (the profile is locked and launch hangs).
 
 3. **★ Attach to running Chrome (CDP) — recommended to use the EXACT Chrome you're browsing in:** the bot connects to the Chrome that is *already open*, using the same profile and accounts. Steps:
-   - Run **`launch-chrome-debug.bat`** (Windows) / `./launch-chrome-debug.sh` (Mac/Linux) **once**. This relaunches your Chrome with `--remote-debugging-port=9222` on your real profile.
+   - Set the **"Chrome profile to use"** field to your profile name (e.g. `Default`, `Profile 5`).
+   - Run **`launch-chrome-debug.bat`** (Windows) / `./launch-chrome-debug.sh` (Mac/Linux) **once**. It asks you to fully quit Chrome first, then relaunches that profile with `--remote-debugging-port=9222`. (If you have many profiles, you can pass one: `launch-chrome-debug.bat --profile "Profile 5"`.)
    - Keep that Chrome window open.
    - In the dashboard, turn **ON** *"Attach to running Chrome (CDP)"*, then click **START BOT**. The bot attaches to your open Chrome — no logout, no re-login, no closing Chrome.
+
+> **Which profile?** In `config.json`, `"chrome_profile_dir"` selects the profile inside your Chrome "User Data" folder (`Default`, `Profile 1`, `Profile 2`, …). The dashboard's *"Chrome profile to use"* field sets the same value. Use the one that holds your logged-in channel accounts.
 
 ---
 
