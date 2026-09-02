@@ -66,7 +66,11 @@ def add_log(message: str, category: str = "info"):
 def engine_callback(event: dict):
     etype = event.get("type")
     with STATE_LOCK:
-        if etype == "started":
+        if etype == "status":
+            STATE["status"] = event.get("status", STATE["status"])
+            add_log(event.get("status", ""), "info")
+
+        elif etype == "started":
             STATE["running"] = True
             STATE["status"] = "Automation Engine Active"
             STATE["started_at"] = event.get("timestamp")

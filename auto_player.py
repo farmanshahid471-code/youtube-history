@@ -818,12 +818,18 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=Fa
             page.goto("https://www.youtube.com", timeout=60000)
 
             if not use_real_chrome and not headless:
-                print("\nBrowser is open. If this is your first run, log into your Google Account.")
-                print("Once logged in with your accounts, press ENTER to begin...")
-                try:
-                    input()
-                except EOFError:
-                    time.sleep(15)
+                # CLI mode (no status_callback): wait for the user to log in and press ENTER.
+                # When driven from the Web UI (status_callback provided) we MUST NOT block on
+                # console input, otherwise the dashboard looks like the bot is hung.
+                if status_callback is None:
+                    print("\nBrowser is open. If this is your first run, log into your Google Account.")
+                    print("Once logged in with your accounts, press ENTER to begin...")
+                    try:
+                        input()
+                    except EOFError:
+                        time.sleep(15)
+                else:
+                    print("UI mode: continuing without a console prompt (log in from the browser window if needed).")
 
             # Account roster resolution
             configured_accounts = rot_cfg.get("accounts", [])

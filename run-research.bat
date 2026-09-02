@@ -1,5 +1,5 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 title YouTube History Bot - Research Scanner
 cd /d "%~dp0"
 
@@ -10,16 +10,16 @@ echo.
 
 set "PYTHON_CMD="
 where python >nul 2>nul
-if %errorlevel% equ 0 (
+if not errorlevel 1 (
     set "PYTHON_CMD=python"
 ) else (
     where py >nul 2>nul
-    if %errorlevel% equ 0 (
+    if not errorlevel 1 (
         set "PYTHON_CMD=py"
     )
 )
 
-if "%PYTHON_CMD%"=="" (
+if not defined PYTHON_CMD (
     echo [ERROR] Python is not installed or not in PATH!
     echo.
     echo Please install Python 3.10+ from: https://www.python.org/downloads/

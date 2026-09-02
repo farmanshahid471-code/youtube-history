@@ -1,5 +1,5 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 title YouTube History Bot - Control Panel
 cd /d "%~dp0"
 
@@ -9,18 +9,23 @@ echo ======================================================================
 echo.
 
 :: 1. Detect Python or Py Launcher
+:: NOTE: we use "if not errorlevel 1" (runtime check) instead of "%errorlevel% equ 0"
+:: inside the parenthesised blocks.  "%errorlevel%" is expanded at PARSE time when the
+:: whole if/else block is read, so the inner check would always use the OUTER result
+:: and never detect the "py" launcher - causing "Python is not installed" and an
+:: immediate, silent exit.  "if errorlevel" is always evaluated at runtime.
 set "PYTHON_CMD="
 where python >nul 2>nul
-if %errorlevel% equ 0 (
+if not errorlevel 1 (
     set "PYTHON_CMD=python"
 ) else (
     where py >nul 2>nul
-    if %errorlevel% equ 0 (
+    if not errorlevel 1 (
         set "PYTHON_CMD=py"
     )
 )
 
-if "%PYTHON_CMD%"=="" (
+if not defined PYTHON_CMD (
     echo [ERROR] Python is not installed or not in PATH!
     echo.
     echo Please install Python 3.10+ from: https://www.python.org/downloads/
@@ -40,7 +45,9 @@ if not exist ".venv\Scripts\python.exe" (
     %PYTHON_CMD% -m venv .venv
     if errorlevel 1 (
         echo [ERROR] Failed to create virtual environment!
-        pause
+        echo.
+        echo Press any key to close...
+        pause >nul
         exit /b 1
     )
 ) else (
@@ -56,7 +63,9 @@ if errorlevel 1 (
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt
     if errorlevel 1 (
         echo [ERROR] Failed to install requirements. Check your internet connection.
-        pause
+        echo.
+        echo Press any key to close...
+        pause >nul
         exit /b 1
     )
 )
@@ -64,6 +73,11 @@ if errorlevel 1 (
 :: 4. Install Playwright Chromium (if needed)
 echo [4/4] Checking browser engine...
 ".venv\Scripts\python.exe" -m playwright install chromium
+if errorlevel 1 (
+    echo [WARNING] Playwright Chromium install may have failed. The bot may still work
+    echo          if your system browser is available.
+    echo.
+)
 
 echo.
 echo ======================================================================
@@ -75,11 +89,16 @@ echo.
 :: Launch browser in background after 2 seconds
 start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:5000"
 
-:: Start the UI Server
+:: Start the UI Server (runs in the foreground of this window)
 ".venv\Scripts\python.exe" bot_ui.py %*
+set "BOT_EXIT=%errorlevel%"
 
 echo.
 echo ======================================================================
-echo Server stopped.
+echo Server stopped (exit code: %BOT_EXIT%).
 echo ======================================================================
+echo.
+echo This window is now idle. You can close it, or run the bot again.
+echo.
 pause
+exit /b %BOT_EXIT%
