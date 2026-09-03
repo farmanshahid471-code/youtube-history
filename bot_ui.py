@@ -90,7 +90,7 @@ def engine_callback(event: dict):
             acc_names = ", ".join(labels)
             add_log(f"Detected {len(accs)} account(s) in profile: {acc_names}", "account")
             if len(accs) <= 1:
-                add_log("Only 1 account found. To enable rotation, add your other accounts to the bot's profile (log them in via 'Open Browser - Log In All Accounts').", "account")
+                add_log("Only 1 account found. To rotate between accounts: (1) click 'Open Browser - Log In All Accounts' and add each account (avatar -> Switch account -> Add account), OR (2) list them in the 'Accounts List' box.", "account")
 
         elif etype == "account_changed":
             name = event.get("account", "Unknown")

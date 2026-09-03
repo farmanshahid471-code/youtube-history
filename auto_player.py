@@ -590,91 +590,111 @@ def _flag(views) -> str:
 # --------------------------------------------------------------------------
 # Multi-Account Detection & Switching
 # --------------------------------------------------------------------------
-def discover_available_accounts(page) -> list[dict]:
+def _read_account_items(page) -> list[dict]:
     """
-    Scans the YouTube profile session to discover all channel/brand accounts.
-    Returns list of dicts: [{'index': 0, 'name': 'Channel A', 'handle': '@chA'}, ...]
+    Read the accounts currently rendered in YouTube's account switcher UI.
+    Robustly walks the item tree so it picks up channel name AND the Google
+    account identity (email), and de-duplicates. Returns a list of dicts.
     """
-    print("\n[Accounts] Detecting linked YouTube channels in profile...")
-
-    # Strategy 1: Navigate to channel switcher URL
     try:
-        page.goto("https://www.youtube.com/channel_switcher", timeout=40000)
-        page.wait_for_load_state("domcontentloaded")
-        time.sleep(3)
-        _dismiss_banners(page)
-
-        items = page.query_selector_all("ytd-account-item-renderer, tp-yt-paper-item")
-        if items:
-            raw = page.evaluate("""() => {
-                const results = [];
-                const seen = new Set();
-                const els = document.querySelectorAll('ytd-account-item-renderer, tp-yt-paper-item');
-                els.forEach((el, idx) => {
-                    const title = el.querySelector('#channel-title, yt-formatted-string#channel-title, #account-name, .channel-title');
-                    const handleEl = el.querySelector('#email, yt-formatted-string#email, .email, .account-email');
-                    const name = title ? title.textContent.trim() : '';
-                    const handle = handleEl ? handleEl.textContent.trim() : '';
-                    const key = (name + '|' + handle).toLowerCase();
-                    if (name && !name.toLowerCase().includes('create a channel') && !name.toLowerCase().includes('add account')
-                        && !seen.has(key)) {
-                        seen.add(key);
-                        results.push({
-                            index: idx,
-                            name: name,
-                            handle: handle
-                        });
-                    }
-                });
-                return results;
-            }""")
-            if raw and len(raw) > 0:
-                print(f"[Accounts] Found {len(raw)} account(s) via channel_switcher:")
-                for a in raw:
-                    print(f"   [{a['index'] + 1}] {a['name']} {('(' + a['handle'] + ')') if a.get('handle') else ''}")
-                return raw
+        raw = page.evaluate("""() => {
+            const results = [];
+            const seen = new Set();
+            const els = document.querySelectorAll('ytd-account-item-renderer, ytd-account-item-section-renderer');
+            els.forEach((el) => {
+                const anchor = el.querySelector('#channel-title, yt-formatted-string#channel-title, #account-name, .channel-title, tp-yt-paper-item-body yt-formatted-string');
+                const handleEl = el.querySelector('#email, yt-formatted-string#email, .email, .account-email, #channel-handle');
+                const name = anchor ? anchor.textContent.trim() : '';
+                const handle = handleEl ? handleEl.textContent.trim() : '';
+                const key = (name + '|' + handle).toLowerCase();
+                if (name && !name.toLowerCase().includes('create a channel')
+                    && !name.toLowerCase().includes('add account')
+                    && !name.toLowerCase().includes('use another account')
+                    && !seen.has(key)) {
+                    seen.add(key);
+                    results.push({ name: name, handle: handle });
+                }
+            });
+            return results;
+        }""")
+        if raw:
+            out = []
+            for i, a in enumerate(raw):
+                out.append({"index": i, "name": a["name"], "handle": a.get("handle", "")})
+            return out
     except Exception as ex:
-        print(f"[Accounts] Notice during channel_switcher scan: {str(ex)[:80]}")
+        print(f"[Accounts] Note reading items: {str(ex)[:80]}")
+    return []
 
-    # Strategy 2: Check Avatar Menu
+
+def _open_account_switcher(page):
+    """
+    Open YouTube's account switcher dialog (which lists every signed-in Google account
+    and every channel under them) by clicking the avatar then the 'Switch account' item.
+    Returns True if the switcher opened.
+    """
     try:
         page.goto("https://www.youtube.com", timeout=40000)
         page.wait_for_load_state("domcontentloaded")
         time.sleep(2)
         _dismiss_banners(page)
 
-        avatar = page.query_selector("button#avatar-btn, ytd-topbar-menu-button-renderer #avatar-btn, yt-img-shadow#avatar")
-        if avatar:
-            avatar.click()
-            time.sleep(1.5)
-            switch_btn = page.query_selector("ytd-compact-link-renderer:has-text('Switch account'), tp-yt-paper-item:has-text('Switch account')")
-            if switch_btn:
-                switch_btn.click()
-                time.sleep(1.5)
-                raw = page.evaluate("""() => {
-                    const results = [];
-                    const els = document.querySelectorAll('ytd-account-item-renderer');
-                    els.forEach((el, idx) => {
-                        const title = el.querySelector('#channel-title, yt-formatted-string#channel-title, #account-name');
-                        const handle = el.querySelector('#email, yt-formatted-string#email');
-                        const name = title ? title.textContent.trim() : '';
-                        if (name) {
-                            results.push({
-                                index: idx,
-                                name: name,
-                                handle: handle ? handle.textContent.trim() : ''
-                            });
-                        }
-                    });
-                    return results;
-                }""")
-                if raw and len(raw) > 0:
-                    print(f"[Accounts] Found {len(raw)} account(s) via Avatar Menu:")
-                    for a in raw:
-                        print(f"   [{a['index'] + 1}] {a['name']} {('(' + a['handle'] + ')') if a.get('handle') else ''}")
-                    return raw
+        avatar = page.query_selector(
+            "button#avatar-btn, ytd-topbar-menu-button-renderer #avatar-btn, yt-img-shadow#avatar"
+        )
+        if not avatar:
+            return False
+        avatar.click()
+        time.sleep(2)
+        # 'Switch account' item (may not exist if only one account; that's fine).
+        switch_btn = page.query_selector(
+            "ytd-compact-link-renderer:has-text('Switch account'), "
+            "tp-yt-paper-item:has-text('Switch account'), "
+            "ytd-menu-service-item-renderer:has-text('Switch account'), "
+            "a[href*='account_switcher']"
+        )
+        if switch_btn:
+            switch_btn.click()
+            time.sleep(2)
+        return True
     except Exception as ex:
-        print(f"[Accounts] Notice during avatar menu scan: {str(ex)[:80]}")
+        print(f"[Accounts] Note opening switcher: {str(ex)[:80]}")
+        return False
+
+
+def discover_available_accounts(page) -> list[dict]:
+    """
+    Scans the YouTube profile session to discover ALL linked accounts/channels.
+    Returns list of dicts: [{'index': 0, 'name': 'Channel A', 'handle': '@chA'}, ...]
+    Open the account switcher dialog, which lists every signed-in Google account and
+    channel, and read the items. Falls back to the channel_switcher page and the avatar
+    menu if the dialog can't be opened.
+    """
+    print("\n[Accounts] Detecting linked YouTube accounts in profile...")
+
+    # Strategy 1: open avatar menu / account switcher and read all account items.
+    if _open_account_switcher(page):
+        raw = _read_account_items(page)
+        if raw and len(raw) > 0:
+            print(f"[Accounts] Found {len(raw)} account(s) via Account Switcher:")
+            for a in raw:
+                print(f"   [{a['index'] + 1}] {a['name']} {('(' + a['handle'] + ')') if a.get('handle') else ''}")
+            return raw
+
+    # Strategy 2: Navigate to the channel switcher URL.
+    try:
+        page.goto("https://www.youtube.com/channel_switcher", timeout=40000)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(3)
+        _dismiss_banners(page)
+        raw = _read_account_items(page)
+        if raw and len(raw) > 0:
+            print(f"[Accounts] Found {len(raw)} account(s) via channel_switcher:")
+            for a in raw:
+                print(f"   [{a['index'] + 1}] {a['name']} {('(' + a['handle'] + ')') if a.get('handle') else ''}")
+            return raw
+    except Exception as ex:
+        print(f"[Accounts] Notice during channel_switcher scan: {str(ex)[:80]}")
 
     print("[Accounts] Single default account / guest session active.")
     return [{"index": 0, "name": "Active Profile Account", "handle": ""}]
@@ -690,44 +710,82 @@ def switch_to_account(page, target_idx: int, target_name: str = "") -> str:
     print(f"[Account Switcher] Switching to: {label}...")
     print("=" * 50)
 
-    # Strategy 1: via channel_switcher page
+    # Strategy 1: open account switcher dialog and click the matching item by name/index.
+    try:
+        if _open_account_switcher(page):
+            # Read every account item - we'll match on name first, then fall back to index.
+            matched = page.evaluate("""(target) => {
+                const els = Array.from(document.querySelectorAll('ytd-account-item-renderer'));
+                if (!els || els.length === 0) return null;
+
+                const textOf = (el) => {
+                    const t = el.querySelector('#channel-title, yt-formatted-string#channel-title, #account-name, tp-yt-paper-item-body yt-formatted-string');
+                    return t ? t.textContent.trim() : '';
+                };
+
+                if (target.name && target.name.trim()) {
+                    const targetLower = target.name.toLowerCase();
+                    for (let i = 0; i < els.length; i++) {
+                        const name = textOf(els[i]);
+                        if (name && (name.toLowerCase().includes(targetLower) || targetLower.includes(name.toLowerCase()))) {
+                            els[i].click();
+                            return name;
+                        }
+                    }
+                }
+                const idx = ((target.idx % els.length) + els.length) % els.length;
+                const name = textOf(els[idx]) || `Account #${target.idx + 1}`;
+                els[idx].click();
+                return name;
+            }""", {"idx": target_idx, "name": target_name})
+
+            if matched:
+                time.sleep(4)
+                page.wait_for_load_state("domcontentloaded")
+                print(f"[Account Switcher] Switched successfully to: '{matched}'")
+                return matched
+    except Exception as e:
+        print(f"[Account Switcher] Notice via account switcher: {str(e)[:80]}")
+
+    # Strategy 2: via channel_switcher page
     try:
         page.goto("https://www.youtube.com/channel_switcher", timeout=40000)
         page.wait_for_load_state("domcontentloaded")
         time.sleep(3)
         _dismiss_banners(page)
 
-        switched = page.evaluate("""(target) => {
+        matched = page.evaluate("""(target) => {
             const els = Array.from(document.querySelectorAll('ytd-account-item-renderer, tp-yt-paper-item'));
             if (!els || els.length === 0) return null;
-            
-            if (typeof target.name === 'string' && target.name.trim().length > 0) {
+            const textOf = (el) => {
+                const t = el.querySelector('#channel-title, yt-formatted-string#channel-title, #account-name, tp-yt-paper-item-body yt-formatted-string');
+                return t ? t.textContent.trim() : '';
+            };
+            if (target.name && target.name.trim()) {
                 const targetLower = target.name.toLowerCase();
                 for (let i = 0; i < els.length; i++) {
-                    const title = els[i].querySelector('#channel-title, yt-formatted-string#channel-title, #account-name');
-                    const name = title ? title.textContent.trim() : '';
-                    if (name.toLowerCase().includes(targetLower) || targetLower.includes(name.toLowerCase())) {
+                    const name = textOf(els[i]);
+                    if (name && (name.toLowerCase().includes(targetLower) || targetLower.includes(name.toLowerCase()))) {
                         els[i].click();
                         return name;
                     }
                 }
             }
-            const idx = target.idx % els.length;
-            const title = els[idx].querySelector('#channel-title, yt-formatted-string#channel-title, #account-name');
-            const name = title ? title.textContent.trim() : `Account #${idx + 1}`;
+            const idx = ((target.idx % els.length) + els.length) % els.length;
+            const name = textOf(els[idx]) || `Account #${target.idx + 1}`;
             els[idx].click();
             return name;
         }""", {"idx": target_idx, "name": target_name})
 
-        if switched:
+        if matched:
             time.sleep(4)
             page.wait_for_load_state("domcontentloaded")
-            print(f"[Account Switcher] Switched successfully to: '{switched}'")
-            return switched
+            print(f"[Account Switcher] Switched successfully to: '{matched}'")
+            return matched
     except Exception as e:
         print(f"[Account Switcher] Notice via channel_switcher: {str(e)[:80]}")
 
-    # Strategy 2: via Topbar Avatar Dropdown
+    # Strategy 3: via Topbar Avatar Dropdown (last resort)
     try:
         page.goto("https://www.youtube.com", timeout=40000)
         page.wait_for_load_state("domcontentloaded")
