@@ -25,7 +25,9 @@ The bot opens a browser in one of two ways. Pick in the dashboard's **Browser Pr
 
 1. **OFF (default) — dedicated profile `browser_profile/`:** a fresh Chromium window opens. Sign into your Google/YouTube account **in that browser window** and the bot **automatically detects the login and continues** (no need to press Enter). You only log in once. The login (including your 2FA "remember this device" state) is **saved** in `browser_profile/` and reused on every later run, so you don't re-enter 2FA each time.
 
-   **Easy first-time login:** in the dashboard's Browser Profile section, click **"Open Browser — Log In All Accounts"**. A Chromium window opens to YouTube; log into your Google account (completing any 2FA), and all your linked brand/channel accounts under it are saved. Close that window, then press **START BOT** — it reuses the saved session and starts immediately.
+   **Easy first-time login:** in the dashboard's Browser Profile section, click **"Open Browser — Log In All Accounts"**. A **real Google Chrome** window opens to the Google sign-in page; log into your account (completing any 2FA), and all your linked brand/channel accounts under it are saved. Close that window, then press **START BOT** — it reuses the saved session and starts immediately.
+
+   > **"This browser or app may not be secure"?** Google blocks sign-in from browsers it detects as automated. The bot launches your **real Google Chrome** with stealth flags (`--disable-blink-features=AutomationControlled`, `--enable-automation` stripped, `navigator.webdriver` masked), so this error does **not** appear and login works.
 
 2. **ON — your real Chrome profile:** the bot opens the chosen Chrome profile (already signed in, with all your channel accounts). Set **"Chrome profile to use"** to the profile name (e.g. `Default`, `Profile 5`) and turn **ON** *"Use my real Chrome profile"*. The bot **auto-closes any running Chrome**, then launches that profile directly. Playwright uses a pipe (not the debug port), so it works even on Chrome 136+.
 

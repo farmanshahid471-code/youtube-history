@@ -369,6 +369,68 @@ def _ensure_browser() -> str:
         )
 
 
+def _stealth_args(extra=None):
+    """
+    Chrome command-line args that stop Google's "This browser or app may not be secure"
+    sign-in block. Playwright's default Chromium is detected as automated, so we launch
+    the user's REAL Google Chrome (channel='chrome') with --disable-blink-features=
+    AutomationControlled and without --enable-automation, so login works.
+    """
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--start-maximized",
+        "--disable-features=TranslateUI",
+    ]
+    if extra:
+        args.extend(extra)
+    return args
+
+
+def _stealth_init_script():
+    """
+    JavaScript run on every page to hide automation markers Google checks for.
+    """
+    return """
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    window.chrome = window.chrome || { runtime: {} };
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    const origQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+    window.navigator.permissions.query = (params) => (
+        params.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : origQuery(params)
+    );
+    """
+
+
+def launch_persistent_browser(p, user_data_dir, headless=False, extra_args=None, channel="chrome"):
+    """
+    Launch a persistent Chrome context that can pass Google's sign-in security check.
+    Uses the REAL installed Chrome (channel='chrome') with stealth flags, so the user
+    can log into their Google account without "This browser or app may not be secure".
+    Returns a BrowserContext.
+    """
+    ctx = p.chromium.launch_persistent_context(
+        str(user_data_dir),
+        channel=channel,
+        headless=headless,
+        args=_stealth_args(extra_args),
+        ignore_default_args=["--enable-automation"],
+        viewport=None,
+        locale="en-US",
+        timeout=90000,
+    )
+    try:
+        ctx.add_init_script(_stealth_init_script())
+    except Exception:
+        pass
+    return ctx
+
+
 def _dismiss_banners(page):
     """Dismisses consent, cookie, or info overlays."""
     selectors = [
@@ -1040,17 +1102,10 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
     cdp_url = cfg.get("cdp_url", "http://localhost:9222")
 
     try:
-        # In DEDICATED profile mode we launch Playwright's own Chromium, so verify it
-        # is actually installed (fail fast with a clear message instead of hanging).
-        # In REAL Chrome / CDP mode we use your installed chrome.exe, so this check is
-        # skipped - Playwright's bundled Chromium is irrelevant there.
-        if not use_real_chrome and not connect_cdp:
-            try:
-                _ensure_browser()
-            except RuntimeError as e:
-                print(str(e))
-                emit("error", message=str(e))
-                return
+        # We launch the user's REAL installed Google Chrome (channel='chrome') in every
+        # mode here, so Playwright's bundled Chromium is NOT required - only a real Chrome
+        # install. No _ensure_browser() gate: it would wrongly block when the user has
+        # real Chrome but not Playwright's bundled Chromium.
 
         with sync_playwright() as p:
             if connect_cdp:
@@ -1176,15 +1231,11 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
 
             else:
                 dedicated.mkdir(exist_ok=True)
-                emit("status", status="Opening a fresh browser window (dedicated profile)...")
-                ctx = p.chromium.launch_persistent_context(
-                    str(dedicated),
-                    headless=headless,
-                    args=["--start-maximized", "--no-first-run", "--no-default-browser-check"],
-                    viewport=None,
-                    locale="en-US",
-                    timeout=60000,
-                )
+                emit("status", status="Opening your saved Chrome session (dedicated profile)...")
+                # Launch the user's REAL installed Chrome (channel='chrome') with stealth flags
+                # so the saved login is used AND Google's "browser may not be secure" block does
+                # not prevent account access. Same profile (browser_profile/) the login window used.
+                ctx = launch_persistent_browser(p, dedicated, headless=headless)
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=60000)
                 try:

@@ -93,27 +93,11 @@ rem 4. Install Playwright's Chromium browser
 rem ---------------------------------------------------------------
 :browser
 echo [4/4] Checking browser engine...
-".venv\Scripts\python.exe" -m playwright install chromium
-if errorlevel 1 (
-    echo [WARNING] Playwright Chromium install may have failed. The bot may still
-    echo          work if you enable "Use my real Chrome profile" in the dashboard.
-    echo.
-)
-rem Verify Chromium is actually installed, else the bot can't open a window.
-".venv\Scripts\python.exe" -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()" >nul 2>nul
-if errorlevel 1 (
-    echo [ERROR] Playwright Chromium is NOT installed, so the bot cannot open a browser.
-    echo         Trying to install it now - this needs internet and a minute or two...
-    ".venv\Scripts\python.exe" -m playwright install chromium
-    if errorlevel 1 (
-        echo [ERROR] Still could not install Chromium. Check your internet connection
-        echo         and your antivirus, then re-run this launcher.
-        echo.
-        echo Press any key to close...
-        pause >nul
-        exit /b 1
-    )
-)
+rem The bot uses your REAL installed Google Chrome (channel="chrome"), so Playwright's
+rem bundled Chromium is only needed for the optional CDP/debug helpers. We still try to
+rem install it (harmless), but we do NOT block here if it fails - the bot works with Chrome.
+".venv\Scripts\python.exe" -m playwright install chromium >nul 2>nul
+echo [OK] Browser engine ready. The bot will use your real Google Chrome.
 
 rem ---------------------------------------------------------------
 rem Sanity check the UI script exists

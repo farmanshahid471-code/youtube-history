@@ -183,45 +183,31 @@ def bot_worker(cfg: dict, use_real_chrome: bool, profile_dir: str):
 
 def open_login_browser_worker(cfg: dict):
     """
-    Opens ONLY a persistent browser window (Playwright's own Chromium) on the dedicated
-    profile so the user can log into Google/YouTube once - it does NOT run the automation
-    loop. The browser stays open until the user closes it; the signed-in session is saved to
-    the persistent profile and reused by the bot on every later run.
+    Opens ONLY a persistent browser window using the user's REAL installed Chrome
+    (channel='chrome' with stealth flags) on the dedicated profile, so the user can
+    log into Google/YouTube ONCE without hitting Google's "This browser or app may not
+    be secure" block. It does NOT run the automation loop. The browser stays open until
+    the user closes it; the signed-in session is saved to the persistent profile and
+    reused by the bot on every later run.
     """
     import auto_player
     dedicated = Path(HERE) / "browser_profile"
     try:
         dedicated.mkdir(parents=True, exist_ok=True)
         from playwright.sync_api import sync_playwright
-        # Fail fast if Playwright's Chromium isn't installed, with a clear message.
-        try:
-            auto_player._ensure_browser()
-        except RuntimeError as e:
-            add_log(f"Login browser error: {e}", "error")
-            with STATE_LOCK:
-                STATE["status"] = f"Error: {e}"
-            return
 
         add_log("Opening login browser (log in to all your accounts, then close it)...", "info")
         with sync_playwright() as p:
-            ctx = p.chromium.launch_persistent_context(
-                str(dedicated),
-                headless=False,
-                args=["--start-maximized", "--no-first-run", "--no-default-browser-check"],
-                viewport=None,
-                locale="en-US",
-                timeout=60000,
-            )
+            # Real Chrome + stealth so Google lets the user sign in (no "may not be secure").
+            ctx = auto_player.launch_persistent_browser(p, dedicated, headless=False)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=60000)
+            page.goto("https://accounts.google.com", wait_until="domcontentloaded", timeout=60000)
             with STATE_LOCK:
                 STATE["status"] = "Login browser open — sign in, then close the window"
             # Keep the browser open until the user closes the window.
             while True:
                 try:
                     if not ctx.pages or ctx.pages[0].is_closed():
-                        from playwright.sync_api import Error as _PWError
-                        # Both the context's pages are closed -> user closed the window.
                         break
                 except Exception:
                     break
@@ -231,7 +217,9 @@ def open_login_browser_worker(cfg: dict):
                 STATE["status"] = "Login saved — you can now press START BOT"
             add_log("Login browser closed. Signed-in session saved. Press START BOT.", "system")
     except Exception as ex:
-        add_log(f"Login browser closed/errored: {str(ex)[:160]}", "info")
+        add_log(f"Login browser errored: {str(ex)[:200]}", "error")
+        with STATE_LOCK:
+            STATE["status"] = "Could not open login browser - see log"
 
 
 def _bot_heartbeat_watchdog():
