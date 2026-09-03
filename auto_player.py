@@ -259,6 +259,59 @@ def close_chrome():
         pass
 
 
+def close_profile_browser(user_data_dir):
+    """
+    Close ONLY the Chrome instance(s) bound to a specific user-data-dir (profile folder),
+    leaving the user's own Chrome untouched. This fixes the "Opening in existing browser
+    session ... profile is already in use" error: after the user logs in via the
+    "Open Browser - Log In" window, they close the window, but Chrome's background process
+    keeps running and still holds the profile. When the bot then launches the same
+    profile, Chrome reports the profile is already in use.
+
+    We identify the right process(es) by matching their command line against this exact
+    user-data-dir, kill them, and clear the profile's Singleton lock files.
+    """
+    try:
+        ud = str(user_data_dir)
+        if sys.platform == "win32":
+            # Ask Windows for the command lines of running processes and pick the PIDs
+            # whose command line references this exact user-data-dir (plus chrome/msedge).
+            out = subprocess.run(
+                ["wmic", "process", "where", "name like '%chrome%' or name like '%msedge%'",
+                 "get", "ProcessId,CommandLine", "/format:csv"],
+                capture_output=True, text=True, timeout=20,
+            ).stdout
+            pids = set()
+            for line in out.splitlines():
+                low = line.lower()
+                if ud.lower() in low and ("--user-data-dir" in low or "user-data-dir" in low):
+                    # CSV format: Node,CommandLine,ProcessId
+                    parts = line.strip().strip('"').rsplit(",", 1)
+                    if parts:
+                        pid = parts[-1].strip().strip('"')
+                        if pid.isdigit():
+                            pids.add(pid)
+            for pid in pids:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", pid],
+                               capture_output=True, timeout=10)
+            time.sleep(2)
+        else:
+            subprocess.run(["pkill", "-9", "-f", ud], capture_output=True, timeout=20)
+            time.sleep(2)
+
+        # Clear this profile's Singleton lock files so the next launch isn't blocked.
+        root = Path(ud)
+        candidates = [root] + ([p for p in root.iterdir() if p.is_dir()] if root.is_dir() else [])
+        for folder in candidates:
+            for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+                try:
+                    (folder / lock).unlink(missing_ok=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def stopped() -> bool:
     return STOP_FILE.exists()
 
@@ -1232,10 +1285,33 @@ def run_player_engine(cfg: dict = None, status_callback=None, use_real_chrome=No
             else:
                 dedicated.mkdir(exist_ok=True)
                 emit("status", status="Opening your saved Chrome session (dedicated profile)...")
+                # The user may have just logged in via the 'Open Browser - Log In' window and
+                # closed it, but Chrome's background process lingers on this same profile. If we
+                # don't close it, Chrome says "Opening in existing browser session / profile is
+                # already in use." Close any Chrome bound to THIS profile folder first (leaving
+                # the user's own Chrome untouched), then launch on the same saved profile.
+                close_profile_browser(dedicated)
                 # Launch the user's REAL installed Chrome (channel='chrome') with stealth flags
                 # so the saved login is used AND Google's "browser may not be secure" block does
                 # not prevent account access. Same profile (browser_profile/) the login window used.
-                ctx = launch_persistent_browser(p, dedicated, headless=headless)
+                ctx = None
+                last_err = None
+                for attempt in range(3):
+                    try:
+                        ctx = launch_persistent_browser(p, dedicated, headless=headless)
+                        break
+                    except Exception as e:
+                        last_err = e
+                        # A lingering Chrome holding the profile is the usual cause; clear it and retry.
+                        close_profile_browser(dedicated)
+                        time.sleep(2)
+                if ctx is None:
+                    emit("error", message=(
+                        "Could not open your saved Chrome session. Close any Chrome window that "
+                        "uses the bot's profile folder, then press START BOT again. Details: %s"
+                        % str(last_err)[:200]
+                    ))
+                    return
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=60000)
                 try:
