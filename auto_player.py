@@ -608,16 +608,21 @@ def discover_available_accounts(page) -> list[dict]:
         if items:
             raw = page.evaluate("""() => {
                 const results = [];
+                const seen = new Set();
                 const els = document.querySelectorAll('ytd-account-item-renderer, tp-yt-paper-item');
                 els.forEach((el, idx) => {
                     const title = el.querySelector('#channel-title, yt-formatted-string#channel-title, #account-name, .channel-title');
-                    const handle = el.querySelector('#email, yt-formatted-string#email, .email');
+                    const handleEl = el.querySelector('#email, yt-formatted-string#email, .email, .account-email');
                     const name = title ? title.textContent.trim() : '';
-                    if (name && !name.toLowerCase().includes('create a channel') && !name.toLowerCase().includes('add account')) {
+                    const handle = handleEl ? handleEl.textContent.trim() : '';
+                    const key = (name + '|' + handle).toLowerCase();
+                    if (name && !name.toLowerCase().includes('create a channel') && !name.toLowerCase().includes('add account')
+                        && !seen.has(key)) {
+                        seen.add(key);
                         results.push({
                             index: idx,
                             name: name,
-                            handle: handle ? handle.textContent.trim() : ''
+                            handle: handle
                         });
                     }
                 });

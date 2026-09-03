@@ -82,8 +82,15 @@ def engine_callback(event: dict):
         elif etype == "accounts_discovered":
             accs = event.get("accounts", [])
             STATE["accounts_list"] = accs
-            acc_names = ", ".join(a["name"] for a in accs)
+            labels = []
+            for a in accs:
+                nm = a.get("name", "")
+                h = a.get("handle", "")
+                labels.append(f"{nm} ({h})" if h else nm)
+            acc_names = ", ".join(labels)
             add_log(f"Detected {len(accs)} account(s) in profile: {acc_names}", "account")
+            if len(accs) <= 1:
+                add_log("Only 1 account found. To enable rotation, add your other accounts to the bot's profile (log them in via 'Open Browser - Log In All Accounts').", "account")
 
         elif etype == "account_changed":
             name = event.get("account", "Unknown")
@@ -238,10 +245,11 @@ def _bot_heartbeat_watchdog():
             status = STATE.get("status", "")
         if not running:
             continue
-        # Allow up to 90s without any heartbeat before recovering. The very first
-        # browser launch can take a while (starting Chromium), so be generous but
-        # not so long that the button stays dead for many minutes.
-        if time.time() - last > 90:
+        # Allow plenty of time without any heartbeat before recovering. The bot takes
+        # natural breaks (up to 180s) between videos and may pause for a slow page, so a
+        # short threshold would falsely report "stalled" during a normal break. Only treat
+        # it as stuck after 5 minutes of real silence.
+        if time.time() - last > 300:
             with STATE_LOCK:
                 STATE["running"] = False
                 STATE["status"] = "Automation stalled (browser did not respond) - press START to try again"
