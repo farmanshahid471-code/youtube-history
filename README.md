@@ -23,9 +23,13 @@ A modular automation and market intelligence suite for YouTube creators with ful
 ### Logging in / using your accounts
 The bot opens a browser in one of two ways. Pick in the dashboard's **Browser Profile** section:
 
-1. **OFF (default) — dedicated profile `browser_profile/`:** a fresh Chromium window opens. Sign into your Google/YouTube account **in that browser window** and the bot **automatically detects the login and continues** (no need to press Enter). You only log in once.
+1. **OFF (default) — dedicated profile `browser_profile/`:** a fresh Chromium window opens. Sign into your Google/YouTube account **in that browser window** and the bot **automatically detects the login and continues** (no need to press Enter). You only log in once. The login (including your 2FA "remember this device" state) is **saved** in `browser_profile/` and reused on every later run, so you don't re-enter 2FA each time.
 
-2. **ON — your real Chrome profile (recommended for existing accounts):** the bot opens the chosen Chrome profile (already signed in, with all your channel accounts). Set **"Chrome profile to use"** to the profile name (e.g. `Default`, `Profile 5`) and turn **ON** *"Use my real Chrome profile"*. The bot **auto-closes any running Chrome**, then launches that profile directly. Playwright uses a pipe (not the debug port), so it works even on Chrome 136+.
+   **Easy first-time login:** in the dashboard's Browser Profile section, click **"Open Browser — Log In All Accounts"**. A Chromium window opens to YouTube; log into your Google account (completing any 2FA), and all your linked brand/channel accounts under it are saved. Close that window, then press **START BOT** — it reuses the saved session and starts immediately.
+
+2. **ON — your real Chrome profile:** the bot opens the chosen Chrome profile (already signed in, with all your channel accounts). Set **"Chrome profile to use"** to the profile name (e.g. `Default`, `Profile 5`) and turn **ON** *"Use my real Chrome profile"*. The bot **auto-closes any running Chrome**, then launches that profile directly. Playwright uses a pipe (not the debug port), so it works even on Chrome 136+.
+
+   > **Note (Chrome 136):** Chrome encrypts a live profile's login with App-Bound Encryption, so directly driving your *live* profile can be unreliable (launch timeout / "Target closed"). The **dedicated profile** option above is the dependable way to keep your accounts; with it you log in once and the session persists.
 
 > **Which profile?** In `config.json`, `"chrome_profile_dir"` selects the profile inside your Chrome "User Data" folder (`Default`, `Profile 1`, `Profile 2`, …). The dashboard's *"Chrome profile to use"* field sets the same value. Use the one that holds your logged-in channel accounts.
 

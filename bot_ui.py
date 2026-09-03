@@ -49,6 +49,7 @@ STATE = {
 }
 STATE_LOCK = threading.RLock()
 BOT_THREAD = None
+LOGIN_BROWSER_THREAD = None
 
 
 def add_log(message: str, category: str = "info"):
@@ -178,6 +179,59 @@ def bot_worker(cfg: dict, use_real_chrome: bool, profile_dir: str):
     finally:
         with STATE_LOCK:
             STATE["running"] = False
+
+
+def open_login_browser_worker(cfg: dict):
+    """
+    Opens ONLY a persistent browser window (Playwright's own Chromium) on the dedicated
+    profile so the user can log into Google/YouTube once - it does NOT run the automation
+    loop. The browser stays open until the user closes it; the signed-in session is saved to
+    the persistent profile and reused by the bot on every later run.
+    """
+    import auto_player
+    dedicated = Path(HERE) / "browser_profile"
+    try:
+        dedicated.mkdir(parents=True, exist_ok=True)
+        from playwright.sync_api import sync_playwright
+        # Fail fast if Playwright's Chromium isn't installed, with a clear message.
+        try:
+            auto_player._ensure_browser()
+        except RuntimeError as e:
+            add_log(f"Login browser error: {e}", "error")
+            with STATE_LOCK:
+                STATE["status"] = f"Error: {e}"
+            return
+
+        add_log("Opening login browser (log in to all your accounts, then close it)...", "info")
+        with sync_playwright() as p:
+            ctx = p.chromium.launch_persistent_context(
+                str(dedicated),
+                headless=False,
+                args=["--start-maximized", "--no-first-run", "--no-default-browser-check"],
+                viewport=None,
+                locale="en-US",
+                timeout=60000,
+            )
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=60000)
+            with STATE_LOCK:
+                STATE["status"] = "Login browser open — sign in, then close the window"
+            # Keep the browser open until the user closes the window.
+            while True:
+                try:
+                    if not ctx.pages or ctx.pages[0].is_closed():
+                        from playwright.sync_api import Error as _PWError
+                        # Both the context's pages are closed -> user closed the window.
+                        break
+                except Exception:
+                    break
+                time.sleep(2)
+            # When the window is closed, the persistent context saves the login.
+            with STATE_LOCK:
+                STATE["status"] = "Login saved — you can now press START BOT"
+            add_log("Login browser closed. Signed-in session saved. Press START BOT.", "system")
+    except Exception as ex:
+        add_log(f"Login browser closed/errored: {str(ex)[:160]}", "info")
 
 
 def _bot_heartbeat_watchdog():
@@ -447,6 +501,23 @@ HTML_PAGE = """<!DOCTYPE html>
                 Chrome session (already logged in, all your channel accounts saved).
                 Close Chrome before starting if you enable this.
               </p>
+
+              <!-- Open-Browser-for-Login helper (dedicated profile mode) -->
+              <div class="pt-1.5 border-t border-slate-800/80 mt-1.5">
+                <button id="btnOpenBrowser" onclick="openLoginBrowser()"
+                        class="w-full flex items-center justify-center space-x-2 px-3 py-2 rounded-lg text-xs font-semibold
+                               bg-gradient-to-r from-emerald-500/20 to-teal-500/20 text-emerald-300
+                               border border-emerald-500/30 hover:from-emerald-500/30 hover:to-teal-500/30
+                               transition-all">
+                  <i class="fas fa-sign-in-alt"></i>
+                  <span>Open Browser — Log In All Accounts (recommended)</span>
+                </button>
+                <p class="text-[11px] text-slate-500 leading-relaxed mt-1.5">
+                  Best for <strong class="text-slate-400">dedicated profile</strong> mode. Click it, log into your
+                  Google account (and any 2FA) in the window that opens — all your brand/channel accounts are
+                  stored once and remembered on every future run. Then press <strong class="text-slate-400">START BOT</strong>.
+                </p>
+              </div>
             </div>
 
             <!-- Attach to Running Chrome (CDP) -->
@@ -735,6 +806,25 @@ HTML_PAGE = """<!DOCTYPE html>
       fetchStatus();
     }
 
+    async function openLoginBrowser() {
+      // Save current settings first (so use_real_chrome / profile dir take effect),
+      // then tell the server to open a persistent browser window for the user to log in.
+      await saveConfig();
+      try {
+        const res = await fetch('/api/open_browser', { method: 'POST' });
+        const result = await res.json();
+        if (result.success) {
+          alert('Login browser opened. Log into your Google account (and any 2FA) in the ' +
+                'window that just opened. Then close that window and press START BOT.');
+        } else {
+          alert('Could not open the login browser: ' + (result.message || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Failed to open login browser: ' + e);
+      }
+      fetchStatus();
+    }
+
     function updateUI(data) {
       isRunning = data.running;
       const btn = document.getElementById('btnToggleBot');
@@ -992,6 +1082,26 @@ class UIHandler(BaseHTTPRequestHandler):
             )
             BOT_THREAD.start()
             self._send_json({"success": True, "message": "Bot started"})
+
+        elif path == "/api/open_browser":
+            # Open a persistent browser window (dedicated profile) so the user can log into
+            # their Google account / all brand channels ONCE. It is NOT the automation loop -
+            # it just opens the browser to the login page and stays open until closed.
+            global LOGIN_BROWSER_THREAD
+            with STATE_LOCK:
+                if LOGIN_BROWSER_THREAD is not None and LOGIN_BROWSER_THREAD.is_alive():
+                    self._send_json({"success": True, "message": "Login browser is already open"})
+                    return
+            import auto_player
+            cfg = auto_player.load_cfg()
+            add_log("Opening dedicated browser window for login...", "system")
+            LOGIN_BROWSER_THREAD = threading.Thread(
+                target=open_login_browser_worker,
+                args=(cfg,),
+                daemon=True,
+            )
+            LOGIN_BROWSER_THREAD.start()
+            self._send_json({"success": True, "message": "Login browser opening"})
 
         elif path == "/api/stop":
             STOP_FILE.write_text("stop", encoding="utf-8")
