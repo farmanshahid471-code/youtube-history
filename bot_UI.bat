@@ -121,12 +121,14 @@ echo   To stop, click STOP BOT in the dashboard, or press Ctrl+C here.
 echo ======================================================================
 echo.
 
-rem Open the dashboard in your DEFAULT browser (NOT Chrome Profile 5).
-rem IMPORTANT: do NOT open the dashboard in Chrome Profile 5 - that locks the
-rem profile so the bot cannot use it. Opening it in the default browser (Edge,
-rem Opera, Chrome-other-profile, etc.) keeps Profile 5 free for the bot to launch.
-echo Opening the dashboard in your default browser (edge/opera/chrome)...
-start "" /b cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:5000"
+rem The dashboard is opened automatically by bot_ui.py ONCE the server is actually
+rem listening (it waits until the server is up, then opens it in your DEFAULT browser).
+rem This avoids the race where the browser would open before the server finished
+rem importing, which made localhost:5000 appear to "not open".
+rem IMPORTANT: do NOT open the dashboard in Chrome Profile 5 - that locks the profile
+rem so the bot cannot use it. Opening it in the default browser (Edge, Opera, etc.)
+rem keeps the profile free for the bot to launch.
+echo The dashboard will open in your default browser automatically...
 
 rem Run the UI server in the foreground of this window
 ".venv\Scripts\python.exe" bot_ui.py %*

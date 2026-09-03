@@ -17,6 +17,7 @@ import os
 import sys
 import threading
 import time
+import webbrowser
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -1135,6 +1136,17 @@ def run_ui_server(port: int = 5000):
     # Start the stalled-engine watchdog so the START button can never be permanently stuck.
     watchdog = threading.Thread(target=_bot_heartbeat_watchdog, daemon=True)
     watchdog.start()
+    # Open the dashboard in the default browser AFTER the server is up. Opening it from
+    # inside Python avoids the race where a .bat fires the browser before the server has
+    # finished importing (playwright/yt-dlp are heavy) - which made localhost:5000 appear
+    # to "not open". Only open once; suppress if it fails (no default browser / headless).
+    def _open_browser_later():
+        try:
+            time.sleep(1.5)
+            webbrowser.open(f"http://localhost:{port}", new=2)
+        except Exception:
+            pass
+    threading.Thread(target=_open_browser_later, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
